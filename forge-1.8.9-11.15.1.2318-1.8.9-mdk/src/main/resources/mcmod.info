@@ -1,0 +1,12 @@
+[{
+  "modid": "projectlipsy",
+  "name": "Project Lipsy",
+  "description": "A PotPvP AI bot mod for Minecraft 1.8.9.",
+  "version": "1.0",
+  "mcversion": "1.8.9",
+  "authorList": ["Br1d3e"],
+  "url": "",
+  "updateUrl": "",
+  "screenshots": [],
+  "dependencies": []
+}]

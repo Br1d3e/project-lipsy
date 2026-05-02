@@ -1,0 +1,55 @@
+----- ** Project Lipsy Dev Log ** -----
+
+10/24/2025
+Project Lipsy has been restarted, after some busy work, from the initial ProjectHX with Mineflayer to forge 1.8.9
+Google Gemini CLI is incredibly useful after I figured out the true way - using it in terminal in a project
++ Added Aiming.java, Clicking.java, Movement.java (not finished),
+Inheriting the same logic from the original mineflayer ones, but promoting legitimacy via raw keyboard level controls
+
+
+10/25/2025
++ Added Healing.java, containing throwPot(), speed(), and eat()
++ Added utils.java, item switch support
+- Healing logic should be revised, currently running on sht codes logic
+Close to the original HX Mineflayer version.
+
+
+10/26/2025
++ Healing logic basically applicable with the help of gemini
++ Added Pearl.java
+Identically built as project HX, the bot has been finshed developing.
+
+
+11/2/2025
++ Refill() function in utils.java
++ Click pattern (butterfly, jitter, normal)
+
+
+11/2/2025
++ Recorder.java, RecorderGUI.java
++ Full system of player events recorder for imitation learnign
+- A few issues:
+    - Retreat() How to define retreat? whats its input and output?
+    - Servers like minemen doesn't grant you access to target's health, which possibly maekes lots of prediction impossible?
+
+
+TODO
+Imitation learning: think of states and actions, record real fights
+Small model per function
+Movement:
+  Wtap() - Record only when distance < 6, log release/hold of W key
+    In: distance, target.hurtTime, thePlayer.velocity, target.getHealth(), comboCount
+    Out: Timing (releaseW, holdW), durationTicks
+  strafe() - Record only when distance < 6, log A & D key
+    In: distance, thePlayer.velocity
+    Out: Left, Right, None
+  retreat()
+    In: dist, target.getHealth, target yaw, pitch, motion
+    Out: thePlayer.yaw, pitch, isJump
+Healing: 
+  throwPot() - Record when has pot 
+    In: thePlayer.getHealth(), target.getHealth(), distance, thePlayer.hurtTime, target.hurtTime
+    Out: shouldPot, aimYaw, aimPitch, keyboard movements
+//  speed()
+//    In: dist,
+//  eat()

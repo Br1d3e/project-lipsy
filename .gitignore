@@ -1,0 +1,55 @@
+# Gradle
+.gradle/
+build/
+*/build/
+out/
+*/out/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Eclipse / Forge generated files
+.eclipse/
+.classpath
+.project
+.settings/
+bin/
+*/bin/
+
+# Forge/Minecraft runtime generated folders
+run/
+*/run/
+logs/
+*/logs/
+eclipse/
+*/eclipse/
+
+# Java compiled files
+*.class
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large/generated data
+datasets/raw/
+datasets/recordings/
+test/recordings/
+*.hprof
+*.pth
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.log
+
+# Keep small dataset samples if they exist
+!datasets/samples/
+!datasets/samples/**
