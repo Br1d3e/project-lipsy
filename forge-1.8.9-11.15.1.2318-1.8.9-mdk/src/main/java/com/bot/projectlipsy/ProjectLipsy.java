@@ -24,6 +24,7 @@ public class ProjectLipsy {
     private Healing healing;
     private utils utils;
     private Pearl pearl;
+    private ModelConnect models;
 
     private enum Status{
         ATTACK,
@@ -38,7 +39,7 @@ public class ProjectLipsy {
     private Status prevStatus = Status.ATTACK;
 
     @Mod.EventHandler
-    public void init(FMLInitializationEvent event) {
+    public void init(FMLInitializationEvent event) throws Exception {
         // This runs when the mod loads
         System.out.println("[Project Lipsy] Mod initialized!");
         movement = new Movement(mc);
@@ -47,12 +48,13 @@ public class ProjectLipsy {
         healing = new Healing(mc);
         utils = new utils(mc);
         pearl = new Pearl(mc);
+        models = new ModelConnect(mc);
         // Register this class to receive tick events
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
 
     @SubscribeEvent
-    public void onClientTick(TickEvent.ClientTickEvent event) {
+    public void onClientTick(TickEvent.ClientTickEvent event) throws Exception {
         if (mc.thePlayer == null) return;
 
         EntityPlayer target = findClosestPlayer();
@@ -69,8 +71,10 @@ public class ProjectLipsy {
 
         switch (status) {
             case ATTACK:
+                models.sendObs(target);
+                float[] actions = models.getActions();
                 movement.update(target);
-                aiming.update(target);
+                aiming.update(target, actions);
                 clicking.update(target);
                 break;
 

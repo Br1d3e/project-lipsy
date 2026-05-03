@@ -1,41 +1,34 @@
 package com.bot.projectlipsy;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.util.MathHelper;
 
-import java.util.*;
+import java.io.IOException;
+import java.util.Arrays;
 
 
 public class ModelConnect {
     // Real-time data logger, sending information to model
-    // Request predicted data from model
+    private static final String MODEL_HOST = "127.0.0.1";
+    private static final int MODEL_PORT = 33333;
+    private static final long RETRY_DELAY_MS = 2000L;
+
     private final Minecraft mc;
-    Map<String, List<Double>> batch = new HashMap<>();
-    Gson gson = new GsonBuilder().create();
-    private String json;
+    private final int batchSize = 9;
+    float[] batch = new float[batchSize];
+    float[] actions = new float[2];
+    private ModelClient modelClient;
+    private long lastConnectAttemptMs = 0L;
+    private boolean printedOfflineMessage = false;
 
     public ModelConnect(Minecraft mc) {
         this.mc = mc;
     }
 
-    public void initBatch() {
-        batch.put("dx", new ArrayList<>());
-        batch.put("dy", new ArrayList<>());
-        batch.put("dz", new ArrayList<>());
-        batch.put("dist", new ArrayList<>());
-        batch.put("targetVelX", new ArrayList<>());
-        batch.put("targetVelY", new ArrayList<>());
-        batch.put("targetVelZ", new ArrayList<>());
-        batch.put("yawDiff", new ArrayList<>());
-        batch.put("PitchDiff", new ArrayList<>());
-
-    }
-
-    public void sendPacket(EntityPlayer target) {
+    public void sendObs(EntityPlayer target) {
         if (mc.thePlayer == null || target == null) return;
+        if (!ensureConnected()) return;
 
         // Whole list of player data from gameplay
         double dx = mc.thePlayer.posX - target.posX;
@@ -53,21 +46,60 @@ public class ModelConnect {
         double targetVelZ = target.motionZ;
         double targetMotion = Math.hypot(targetVelX, targetVelZ);
 
-        // Compiling the data via array
-        batch.get("dx").add(dx);
-        batch.get("dy").add(dy);
-        batch.get("dz").add(dz);
-        batch.get("dist").add(dist);
-        batch.get("targetVelX").add(targetVelX);
-        batch.get("targetVelY").add(targetVelY);
-        batch.get("targetVelZ").add(targetVelZ);
-        batch.get("yawDiff").add((double) yawDiff);
-        batch.get("PitchDiff").add((double) pitchDiff);
+        batch[0] = (float) dx;
+        batch[1] = (float) dy;
+        batch[2] = (float) dz;
+        batch[3] = (float) dist;
+        batch[4] = (float) targetVelX;
+        batch[5] = (float) targetVelY;
+        batch[6] = (float) targetVelZ;
+        batch[7] = yawDiff;
+        batch[8] = pitchDiff;
 
-        // Send json
-        json = gson.toJson(batch);
-        socketOut.write(json + "\n");
-        socketOut.flush();
+        try {
+            modelClient.sendPacket(batch);
+
+            actions = modelClient.readPacket();
+//            mc.thePlayer.sendChatMessage(Arrays.toString(actions));
+        } catch (IOException e) {
+            closeClient();
+            System.out.println("[Project Lipsy] Model connection lost: " + e.getMessage());
+        }
+//        modelClient.stopConn();
     }
 
+    public float[] getActions() {
+        return actions;
+    }
+
+    private boolean ensureConnected() {
+        if (modelClient != null) return true;
+
+        long now = System.currentTimeMillis();
+        if (now - lastConnectAttemptMs < RETRY_DELAY_MS) return false;
+
+        lastConnectAttemptMs = now;
+        try {
+            modelClient = new ModelClient(MODEL_HOST, MODEL_PORT);
+            printedOfflineMessage = false;
+            System.out.println("[Project Lipsy] Connected to model server at " + MODEL_HOST + ":" + MODEL_PORT);
+            return true;
+        } catch (IOException e) {
+            if (!printedOfflineMessage) {
+                System.out.println("[Project Lipsy] Model server is offline; gameplay will continue without model actions.");
+                printedOfflineMessage = true;
+            }
+            return false;
+        }
+    }
+
+    private void closeClient() {
+        if (modelClient == null) return;
+
+        try {
+            modelClient.stopConn();
+        } catch (IOException ignored) {
+        }
+        modelClient = null;
+    }
 }

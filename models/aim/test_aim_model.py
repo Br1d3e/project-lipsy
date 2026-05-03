@@ -4,8 +4,8 @@ import numpy as np
 from train_aim_model import AimDataset, AimLSTM
 
 # ===== Configuration =====
-# FOLDER = "/Users/br1d3e/Library/CloudStorage/OneDrive-Personal/Project Lipsy - Continued/test/recordings/aim"
-FOLDER = "D:/OneDrive/Project Lipsy - Continued/test/recordings/aim"
+FOLDER = "/Users/br1d3e/Library/CloudStorage/OneDrive-Personal/Project Lipsy - Continued/test/recordings/aim"
+# FOLDER = "D:/OneDrive/Project Lipsy - Continued/test/recordings/aim"
 MODEL_PATH = "aim_model_unscaled.pth"
 SEQ_LEN = 20
 BATCH_SIZE = 32
@@ -14,7 +14,7 @@ BATCH_SIZE = 32
 dataset = AimDataset(FOLDER, seq_len=SEQ_LEN)
 loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-device = torch.device("cuda")
+device = torch.device("mps")
 model = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
 model.to(device)
 model.eval()

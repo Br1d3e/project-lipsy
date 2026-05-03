@@ -8,7 +8,7 @@ public class Aiming {
     private final Minecraft mc;
     public Aiming(Minecraft mc) { this.mc = mc; }
 
-    public void update(Entity target) {
+    public void update(Entity target, float[] actions) {
         if (target == null) return;
 
         double xOffset = getRandomOffset(0.05f);
@@ -23,8 +23,13 @@ public class Aiming {
         float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0F);
         float pitch = (float) -Math.toDegrees(Math.atan2(dy, distance));
 
-        mc.thePlayer.rotationYaw = updateRotation(mc.thePlayer.rotationYaw, yaw, 30f);
-        mc.thePlayer.rotationPitch = updateRotation(mc.thePlayer.rotationPitch, pitch, 30f);
+        if (true || actions == null) {
+            mc.thePlayer.rotationYaw = updateRotation(mc.thePlayer.rotationYaw, yaw, 30f);
+            mc.thePlayer.rotationPitch = updateRotation(mc.thePlayer.rotationPitch, pitch, 30f);
+        } else {
+            mc.thePlayer.rotationYaw = mc.thePlayer.rotationYaw + actions[0];
+            mc.thePlayer.rotationPitch = updateRotation(mc.thePlayer.rotationPitch, pitch, 30f);
+        }
     }
 
     private float updateRotation(float current, float target, float maxIncrement) {
