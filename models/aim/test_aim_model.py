@@ -1,82 +1,122 @@
-import torch
+import os
+import pickle
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 import matplotlib.pyplot as plt
 import numpy as np
-from train_aim_model import AimDataset, AimLSTM
+import torch
+from torch.utils.data import DataLoader
 
-# ===== Configuration =====
-FOLDER = "/Users/br1d3e/Library/CloudStorage/OneDrive-Personal/Project Lipsy - Continued/test/recordings/aim"
-# FOLDER = "D:/OneDrive/Project Lipsy - Continued/test/recordings/aim"
-MODEL_PATH = "aim_model_unscaled.pth"
-SEQ_LEN = 20
-BATCH_SIZE = 32
+from train_aim_model import AXIS_CONFIG, BASE_DIR, AimDataset, AimLSTM, BATCH_SIZE, FOLDER, SEQ_LEN, get_device
 
-# ===== Load dataset & model =====
-dataset = AimDataset(FOLDER, seq_len=SEQ_LEN)
-loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-device = torch.device("mps")
-model = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
-model.to(device)
-model.eval()
+PLOT_DIR = os.path.join(BASE_DIR, "eval_plots")
+SHOW_PLOTS = os.environ.get("SHOW_PLOTS") == "1"
 
-# ===== Collect predictions =====
-y_true_all, y_pred_all = [], []
 
-with torch.no_grad():
-    for xb, yb in loader:
-        xb = xb.to(device)
-        pred = model(xb)
-        y_pred_all.append(pred.cpu().numpy())
-        y_true_all.append(yb.numpy())
+def load_scalers(path):
+    with open(path, "rb") as f:
+        scalers = pickle.load(f)
+    return scalers["scaler_x"], scalers["scaler_y"]
 
-y_true = np.concatenate(y_true_all, axis=0)
-y_pred = np.concatenate(y_pred_all, axis=0)
 
-# ===== Inverse scale =====
-# y_true_inv = dataset.scaler_y.inverse_transform(y_true)
-y_true_inv = y_true
-# y_pred_inv = dataset.scaler_y.inverse_transform(y_pred)
-y_pred_inv = y_pred
+def load_model(path, device):
+    model = AimLSTM(input_dim=8, output_dim=1)
+    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=False))
+    model.to(device)
+    model.eval()
+    return model
 
-# ===== Separate columns =====
-yaw_true, pitch_true = y_true_inv[:, 0], y_true_inv[:, 1]
-yaw_pred, pitch_pred = y_pred_inv[:, 0], y_pred_inv[:, 1]
 
-# ===== Scatter plots =====
-plt.figure(figsize=(10, 5))
+def collect_predictions(model, loader, device):
+    y_true_all, y_pred_all = [], []
 
-plt.subplot(1, 2, 1)
-plt.scatter(yaw_true, yaw_pred, s=5, alpha=0.5)
-plt.xlabel("True yawDiff")
-plt.ylabel("Pred yawDiff")
-plt.title("YawDiff Prediction")
-plt.plot([yaw_true.min(), yaw_true.max()],
-         [yaw_true.min(), yaw_true.max()], 'r--')
+    with torch.no_grad():
+        for xb, yb in loader:
+            pred = model(xb.to(device))
+            y_pred_all.append(pred.cpu().numpy())
+            y_true_all.append(yb.numpy())
 
-plt.subplot(1, 2, 2)
-plt.scatter(pitch_true, pitch_pred, s=5, alpha=0.5)
-plt.xlabel("True pitchDiff")
-plt.ylabel("Pred pitchDiff")
-plt.title("PitchDiff Prediction")
-plt.plot([pitch_true.min(), pitch_true.max()],
-         [pitch_true.min(), pitch_true.max()], 'r--')
+    return np.concatenate(y_true_all, axis=0), np.concatenate(y_pred_all, axis=0)
 
-plt.tight_layout()
-plt.show()
 
-# ===== Time series comparison =====
-plt.figure(figsize=(12, 6))
-plt.subplot(2, 1, 1)
-plt.plot(yaw_true[:300], label='True')
-plt.plot(yaw_pred[:300], label='Pred', alpha=0.7)
-plt.title("YawDiff over time")
-plt.legend()
+def finish_plot(path):
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    if SHOW_PLOTS:
+        plt.show()
+    plt.close()
 
-plt.subplot(2, 1, 2)
-plt.plot(pitch_true[:300], label='True')
-plt.plot(pitch_pred[:300], label='Pred', alpha=0.7)
-plt.title("PitchDiff over time")
-plt.legend()
 
-plt.tight_layout()
-plt.show()
+def plot_axis(axis, y_true, y_pred):
+    label = "yawDiff" if axis == "yaw" else "pitchDiff"
+    os.makedirs(PLOT_DIR, exist_ok=True)
+
+    plt.figure(figsize=(8, 6))
+    plt.scatter(y_true, y_pred, s=5, alpha=0.5)
+    plt.xlabel(f"True next {label}")
+    plt.ylabel(f"Pred next {label}")
+    plt.title(f"{axis.capitalize()} model prediction")
+    low = min(y_true.min(), y_pred.min())
+    high = max(y_true.max(), y_pred.max())
+    plt.plot([low, high], [low, high], "r--")
+    plt.show()
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(y_true[:300], label="True")
+    plt.plot(y_pred[:300], label="Pred", alpha=0.75)
+    plt.title(f"{axis.capitalize()} next-error prediction over time")
+    plt.legend()
+    plt.show()
+
+
+def evaluate_axis(axis):
+    config = AXIS_CONFIG[axis]
+    model_path = config["model_path"]
+    scaler_path = config["scaler_path"]
+
+    if not os.path.exists(model_path):
+        print(f"Skipping {axis}: missing model file {model_path}")
+        return
+    if not os.path.exists(scaler_path):
+        print(f"Skipping {axis}: missing scaler file {scaler_path}")
+        return
+
+    use_scaler = True
+    if use_scaler:
+        scaler_x, scaler_y = load_scalers(scaler_path)
+        dataset = AimDataset(
+            FOLDER,
+            axis=axis,
+            seq_len=SEQ_LEN,
+            scaler_x=scaler_x,
+            scaler_y=scaler_y,
+            fit_scalers=False,
+        )
+    else:
+        dataset = AimDataset(
+            FOLDER,
+            axis=axis,
+            seq_len=SEQ_LEN,
+            fit_scalers=False,
+        )
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    device = get_device()
+    model = load_model(model_path, device)
+    y_true, y_pred = collect_predictions(model, loader, device)
+    if use_scaler:
+        y_true = scaler_y.inverse_transform(y_true).reshape(-1)
+        y_pred = scaler_y.inverse_transform(y_pred).reshape(-1)
+
+    mae = np.mean(np.abs(y_pred - y_true))
+    rmse = np.sqrt(np.mean((y_pred - y_true) ** 2))
+    print(f"{axis} | samples={len(dataset)} | MAE={mae:.4f} | RMSE={rmse:.4f}")
+
+    plot_axis(axis, y_true, y_pred)
+
+
+if __name__ == "__main__":
+    evaluate_axis("yaw")
+    evaluate_axis("pitch")

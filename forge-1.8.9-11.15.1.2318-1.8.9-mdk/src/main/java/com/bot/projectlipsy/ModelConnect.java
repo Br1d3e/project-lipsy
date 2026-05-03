@@ -5,9 +5,6 @@ import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.util.MathHelper;
 
 import java.io.IOException;
-import java.util.Arrays;
-
-
 public class ModelConnect {
     // Real-time data logger, sending information to model
     private static final String MODEL_HOST = "127.0.0.1";
@@ -17,7 +14,7 @@ public class ModelConnect {
     private final Minecraft mc;
     private final int batchSize = 9;
     float[] batch = new float[batchSize];
-    float[] actions = new float[2];
+    float[] actions = null;
     private ModelClient modelClient;
     private long lastConnectAttemptMs = 0L;
     private boolean printedOfflineMessage = false;
@@ -31,9 +28,9 @@ public class ModelConnect {
         if (!ensureConnected()) return;
 
         // Whole list of player data from gameplay
-        double dx = mc.thePlayer.posX - target.posX;
-        double dy = mc.thePlayer.posY - target.posY;
-        double dz = mc.thePlayer.posZ - target.posZ;
+        double dx = target.posX - mc.thePlayer.posX;
+        double dy = target.posY - mc.thePlayer.posY;
+        double dz = target.posZ - mc.thePlayer.posZ;
         double dist = mc.thePlayer.getDistanceToEntity(target);
         double distanceXZ = Math.hypot(dx, dz);
         double targetYaw = Math.toDegrees(Math.atan2(dz, dx)) - 90F;
@@ -82,7 +79,6 @@ public class ModelConnect {
         try {
             modelClient = new ModelClient(MODEL_HOST, MODEL_PORT);
             printedOfflineMessage = false;
-            System.out.println("[Project Lipsy] Connected to model server at " + MODEL_HOST + ":" + MODEL_PORT);
             return true;
         } catch (IOException e) {
             if (!printedOfflineMessage) {

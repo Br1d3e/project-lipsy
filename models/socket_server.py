@@ -14,21 +14,21 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AIM_DIR = os.path.join(BASE_DIR, "aim")
 sys.path.insert(0, AIM_DIR)
 
-from train_aim_model import AimLSTM
+from train_aim_model import AXIS_CONFIG, AimLSTM, SEQ_LEN
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-SEQ_LEN = 20
 
-def load_model(path: str):
+def load_model(path: str, input_dim: int, output_dim: int):
     loaded = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(loaded, OrderedDict):
-        model = AimLSTM(input_dim=9, hidden_dim=128, num_layers=2)
+        model = AimLSTM(input_dim=input_dim, hidden_dim=128, num_layers=2, output_dim=output_dim)
         model.load_state_dict(loaded)
         return model
     return loaded
 
 models = {
-    "aim": load_model(os.path.join(AIM_DIR, "aim_model_unscaled2.pth")),
+    "aim_yaw": load_model(AXIS_CONFIG["yaw"]["model_path"], input_dim=8, output_dim=1),
+    "aim_pitch": load_model(AXIS_CONFIG["pitch"]["model_path"], input_dim=8, output_dim=1),
 }
 host = "127.0.0.1"
 port = 33333
@@ -62,8 +62,13 @@ def read_obs_packet(conn: socket.socket):
     obs = np.frombuffer(obs_bytes, dtype="<f4")
     return [seq, nanotime, obs]
 
-def get_aim_data(data: np.ndarray):
-    return np.array(data[:9])
+
+def get_aim_data(data: np.ndarray, mode: str):
+    if mode == "yaw":
+        return np.delete(data[:9], 5)
+    if mode == "pitch":
+        return np.delete(data[:9], 4)
+    raise ValueError("mode must be 'yaw' or 'pitch'")
 
 def build_action_packet(seq: int, actions: list):
     actions = np.asarray(actions, dtype="<f4").reshape(-1)
@@ -88,8 +93,6 @@ def run_server():
         m.to(device)
         m.eval()
 
-    aim_history = deque(maxlen=SEQ_LEN)
-
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -100,23 +103,33 @@ def run_server():
     while True:
         conn, addr = server.accept()
         print("Client connected", addr)
+        aim_yaw_history = deque(maxlen=SEQ_LEN)
+        aim_pitch_history = deque(maxlen=SEQ_LEN)
+
         try:
             while True:
                 seq, nanotime, obs = read_obs_packet(conn)
 
                 # Aiming
-                aim_model = models["aim"]
-                aim_x = get_aim_data(obs)
-                aim_history.append(aim_x)
-                while len(aim_history) < SEQ_LEN:
-                    aim_history.appendleft(aim_x)
+                aim_yaw_model = models["aim_yaw"]
+                aim_pitch_model = models["aim_pitch"]
+                aim_yaw_x = get_aim_data(obs, "yaw")
+                aim_pitch_x = get_aim_data(obs, "pitch")
+                aim_yaw_history.append(aim_yaw_x)
+                aim_pitch_history.append(aim_pitch_x)
+                while len(aim_yaw_history) < SEQ_LEN:
+                    aim_yaw_history.appendleft(aim_yaw_x)
+                while len(aim_pitch_history) < SEQ_LEN:
+                    aim_pitch_history.appendleft(aim_pitch_x)
 
-                aim_tensor = torch.tensor(np.array(aim_history), dtype=torch.float32).unsqueeze(0).to(device)
+                aim_yaw_tensor = torch.tensor(np.array(aim_yaw_history), dtype=torch.float32).unsqueeze(0).to(device)
+                aim_pitch_tensor = torch.tensor(np.array(aim_pitch_history), dtype=torch.float32).unsqueeze(0).to(device)
 
                 with torch.no_grad():
-                    aim_y = aim_model(aim_tensor).squeeze().cpu().tolist()
+                    aim_yaw_y = float(aim_yaw_model(aim_yaw_tensor).reshape(-1)[0].cpu().item())
+                    aim_pitch_y = float(aim_pitch_model(aim_pitch_tensor).reshape(-1)[0].cpu().item())
 
-                packet = build_action_packet(seq, aim_y)
+                packet = build_action_packet(seq, [aim_yaw_y, aim_pitch_y])
                 conn.sendall(packet)
         except ConnectionError as e:
             print("Client disconnected:", e)
