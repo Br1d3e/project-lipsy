@@ -41,10 +41,13 @@ public class Recorder {
 
     private final Minecraft mc = Minecraft.getMinecraft();
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final Gson JSONL_GSON = new Gson();
     private static final String RECORDER_VERSION = "v2";
     private static final int PEARL_COOLDOWN_TICKS = 320;
     private static final int WALL_CHECK_DISTANCE = 5;
+    private static final int INVENTORY_SAMPLE_INTERVAL_TICKS = 5;
+    private static final int SPATIAL_SAMPLE_INTERVAL_TICKS = 2;
+    private static final int PACKET_HOOK_CHECK_INTERVAL_TICKS = 20;
+    private static final int WRITER_FLUSH_INTERVAL_FRAMES = 20;
     private static final String PACKET_HOOK_NAME = "lipsy_recorder_packet_hook";
     public static final File ROOT_DIR = new File(Minecraft.getMinecraft().mcDataDir, "ProjectLipsy/recordings");
 
@@ -77,6 +80,24 @@ public class Recorder {
     private int lastUseItemPacketTick = -1;
     private NetworkManager hookedNetworkManager = null;
     private Channel hookedChannel = null;
+    private int lastPacketHookCheckTick = -1;
+    private int framesSinceFlush = 0;
+    private int lastInventorySampleTick = -1;
+    private List<String> cachedHotbar = new ArrayList<String>();
+    private int cachedInventoryFood = 0;
+    private int cachedInventorySpeedPotions = 0;
+    private int cachedInventoryHealthPotions = 0;
+    private int cachedInventoryPearls = 0;
+    private int lastSpatialSampleTick = -1;
+    private boolean cachedWallBehind = false;
+    private boolean cachedWallLeft = false;
+    private boolean cachedWallRight = false;
+    private boolean cachedWallFront = false;
+    private Integer cachedBlockDistanceFront = null;
+    private Integer cachedBlockDistanceBack = null;
+    private Integer cachedBlockDistanceLeft = null;
+    private Integer cachedBlockDistanceRight = null;
+    private final JsonLineBuilder frameBuilder = new JsonLineBuilder(4096);
 
     // === combo tracking ===
     private int myCombo = 0;
@@ -116,6 +137,8 @@ public class Recorder {
         }
 
         int currentTick = recordingTickIndex;
+        updateInventoryCacheIfNeeded(currentTick);
+        updateSpatialCacheIfNeeded(currentTick);
         boolean useItemPressed = key(mc.gameSettings.keyBindUseItem);
         boolean useItemStarted = useItemPressed && !previousUseItemPressed;
         boolean attackPressed = key(mc.gameSettings.keyBindAttack);
@@ -187,107 +210,105 @@ public class Recorder {
 
         Entity crosshairEntity = getMouseOverEntity();
 
-        Map<String, Object> frame = new LinkedHashMap<>();
-        frame.put("recordingTickIndex", recordingTickIndex++);
-        frame.put("timeMs", time);
-        frame.put("ts", time);
-        frame.put("worldTick", getWorldTick());
-        frame.put("myPosX", mc.thePlayer.posX);
-        frame.put("myPosY", mc.thePlayer.posY);
-        frame.put("myPosZ", mc.thePlayer.posZ);
-        frame.put("myMotionX", mc.thePlayer.motionX);
-        frame.put("myMotionY", mc.thePlayer.motionY);
-        frame.put("myMotionZ", mc.thePlayer.motionZ);
-        frame.put("myYaw", mc.thePlayer.rotationYaw);
-        frame.put("myPitch", mc.thePlayer.rotationPitch);
-        frame.put("myDeltaYaw", myDeltaYaw);
-        frame.put("myDeltaPitch", myDeltaPitch);
-        frame.put("myHp", mc.thePlayer.getHealth());
-        frame.put("myHurtTime", mc.thePlayer.hurtTime);
-        frame.put("myHurtResistantTime", mc.thePlayer.hurtResistantTime);
-        frame.put("myOnGround", mc.thePlayer.onGround);
-        frame.put("mySprinting", mc.thePlayer.isSprinting());
-        frame.put("myMoveForward", mc.thePlayer.moveForward);
-        frame.put("myMoveStrafing", mc.thePlayer.moveStrafing);
-        frame.put("mySwingProgress", mc.thePlayer.swingProgress);
-        frame.put("myUsingItem", mc.thePlayer.isUsingItem());
-        frame.put("myHeldItemType", getHeldItemType(mc.thePlayer));
-        frame.put("myHasSpeedPotion", hasPotion(mc.thePlayer, Potion.moveSpeed));
-        frame.put("mySpeedDurationTicks", getPotionDuration(mc.thePlayer, Potion.moveSpeed));
-        frame.put("myFoodLevel", mc.thePlayer.getFoodStats().getFoodLevel());
-        frame.put("myLineOfSight", getMouseOverEntity() != null);
-        frame.put("myCombo", myCombo);
-        frame.put("targetCombo", targetCombo);
-        frame.put("wallBehind", wallInDirection(180.0F));
-        frame.put("wallLeft", wallInDirection(-90.0F));
-        frame.put("wallRight", wallInDirection(90.0F));
-        frame.put("wallFront", wallInDirection(0.0F));
-        frame.put("pearlCooldownTicksRemaining", pearlCooldownTicksRemaining);
-        frame.put("pearlCooldownSecondsRemaining", pearlCooldownTicksRemaining / 20.0F);
-        frame.put("selectedSlot", mc.thePlayer.inventory.currentItem);
-        frame.put("hotbar", getHotbarSnapshot());
-        frame.put("inventoryFood", countFoodItems());
-        frame.put("inventorySpeedPotions", countSpeedPotions());
-        frame.put("inventoryHealthPotions", countSplashHealthPotions());
-        frame.put("inventoryPearls", countPearls());
-        frame.put("crosshairTargetType", getCrosshairTargetType());
-        frame.put("crosshairTargetId", crosshairEntity == null ? null : crosshairEntity.getEntityId());
-        frame.put("crosshairOnTarget", targetExists && crosshairEntity == target);
-        frame.put("crosshairDistance", crosshairEntity == null ? null : (double) mc.thePlayer.getDistanceToEntity(crosshairEntity));
-        frame.put("ticksSinceLastAttack", ticksSince(lastAttackTick, currentTick));
-        frame.put("ticksSinceLastPot", ticksSince(lastPotTick, currentTick));
-        frame.put("ticksSinceLastEat", ticksSince(lastEatTick, currentTick));
-        frame.put("ticksSinceLastSpeed", ticksSince(lastSpeedTick, currentTick));
-        frame.put("ticksSinceLastDamageTaken", ticksSince(lastDamageTakenTick, currentTick));
-        frame.put("ticksSinceLastHitLanded", ticksSince(lastHitLandedTick, currentTick));
-        frame.put("ticksSinceLastPearl", ticksSince(lastPearlTick, currentTick));
-        frame.put("ticksSinceLastUseItemPacket", ticksSince(lastUseItemPacketTick, currentTick));
-        frame.put("lastAttackTick", nullableTick(lastAttackTick));
-        frame.put("lastEatTick", nullableTick(lastEatTick));
-        frame.put("lastSpeedTick", nullableTick(lastSpeedTick));
-        frame.put("lastDamageTakenTick", nullableTick(lastDamageTakenTick));
-        frame.put("lastHitLandedTick", nullableTick(lastHitLandedTick));
-        frame.put("lastPearlTick", nullableTick(lastPearlTick));
-        frame.put("lastPotTick", nullableTick(lastPotTick));
-        frame.put("lastUseItemPacketTick", nullableTick(lastUseItemPacketTick));
-        frame.put("blockDistanceFront", blockDistanceInDirection(0.0F));
-        frame.put("blockDistanceBack", blockDistanceInDirection(180.0F));
-        frame.put("blockDistanceLeft", blockDistanceInDirection(-90.0F));
-        frame.put("blockDistanceRight", blockDistanceInDirection(90.0F));
-        frame.put("aForward", actionForward());
-        frame.put("aStrafe", actionStrafe());
-        frame.put("aJump", key(mc.gameSettings.keyBindJump) ? 1 : 0);
-        frame.put("aAttack", attackPressed || lastAttackTick == currentTick ? 1 : 0);
-        frame.put("aUseItem", useItemPressed || lastUseItemPacketTick == currentTick ? 1 : 0);
-
-        frame.put("targetExists", targetExists);
-        frame.put("targetRelX", targetRelX);
-        frame.put("targetRelY", targetRelY);
-        frame.put("targetRelZ", targetRelZ);
-        frame.put("targetDistance", targetDistance);
-        frame.put("targetMotionX", targetExists ? target.motionX : null);
-        frame.put("targetMotionY", targetExists ? target.motionY : null);
-        frame.put("targetMotionZ", targetExists ? target.motionZ : null);
-        frame.put("targetYaw", targetExists ? target.rotationYaw : null);
-        frame.put("targetPitch", targetExists ? target.rotationPitch : null);
-        frame.put("targetDeltaYaw", targetYawVel);
-        frame.put("targetDeltaPitch", targetPitchVel);
-        frame.put("targetHp", targetExists ? target.getHealth() : null);
-        frame.put("targetHurtTime", targetExists ? target.hurtTime : null);
-        frame.put("targetHurtResistantTime", targetExists ? target.hurtResistantTime : null);
-        frame.put("targetOnGround", targetExists ? target.onGround : null);
-        frame.put("targetSprinting", targetExists ? target.isSprinting() : null);
-        frame.put("targetSwingProgress", targetExists ? target.swingProgress : null);
-        frame.put("targetUsingItem", targetExists ? target.isUsingItem() : null);
-        frame.put("targetHeldItemType", targetExists ? getHeldItemType(target) : null);
-        frame.put("targetSpeedPotion", targetExists ? hasPotion(target, Potion.moveSpeed) : null);
-        frame.put("targetSpeedDurationTicks", targetExists ? getPotionDuration(target, Potion.moveSpeed): null);
-        frame.put("targetFood", targetExists ? target.getFoodStats().getFoodLevel() : null);
-        frame.put("lineOfSight", targetExists && getMouseOverEntity() == target);
-
-        frame.put("yawDiffToTarget", yawDiffToTarget);
-        frame.put("pitchDiffToTarget", pitchDiffToTarget);
-        frame.put("hpDiff", hpDiff);
+        JsonLineBuilder frame = frameBuilder.reset();
+        frame.field("recordingTickIndex", recordingTickIndex++);
+        frame.field("timeMs", time);
+        frame.field("ts", time);
+        frame.field("worldTick", getWorldTick());
+        frame.field("myPosX", mc.thePlayer.posX);
+        frame.field("myPosY", mc.thePlayer.posY);
+        frame.field("myPosZ", mc.thePlayer.posZ);
+        frame.field("myMotionX", mc.thePlayer.motionX);
+        frame.field("myMotionY", mc.thePlayer.motionY);
+        frame.field("myMotionZ", mc.thePlayer.motionZ);
+        frame.field("myYaw", mc.thePlayer.rotationYaw);
+        frame.field("myPitch", mc.thePlayer.rotationPitch);
+        frame.field("myDeltaYaw", myDeltaYaw);
+        frame.field("myDeltaPitch", myDeltaPitch);
+        frame.field("myHp", mc.thePlayer.getHealth());
+        frame.field("myHurtTime", mc.thePlayer.hurtTime);
+        frame.field("myHurtResistantTime", mc.thePlayer.hurtResistantTime);
+        frame.field("myOnGround", mc.thePlayer.onGround);
+        frame.field("mySprinting", mc.thePlayer.isSprinting());
+        frame.field("myMoveForward", mc.thePlayer.moveForward);
+        frame.field("myMoveStrafing", mc.thePlayer.moveStrafing);
+        frame.field("mySwingProgress", mc.thePlayer.swingProgress);
+        frame.field("myUsingItem", mc.thePlayer.isUsingItem());
+        frame.field("myHeldItemType", getHeldItemType(mc.thePlayer));
+        frame.field("myHasSpeedPotion", hasPotion(mc.thePlayer, Potion.moveSpeed));
+        frame.field("mySpeedDurationTicks", getPotionDuration(mc.thePlayer, Potion.moveSpeed));
+        frame.field("myFoodLevel", mc.thePlayer.getFoodStats().getFoodLevel());
+        frame.field("myLineOfSight", crosshairEntity != null);
+        frame.field("myCombo", myCombo);
+        frame.field("targetCombo", targetCombo);
+        frame.field("wallBehind", cachedWallBehind);
+        frame.field("wallLeft", cachedWallLeft);
+        frame.field("wallRight", cachedWallRight);
+        frame.field("wallFront", cachedWallFront);
+        frame.field("pearlCooldownTicksRemaining", pearlCooldownTicksRemaining);
+        frame.field("pearlCooldownSecondsRemaining", pearlCooldownTicksRemaining / 20.0F);
+        frame.field("selectedSlot", mc.thePlayer.inventory.currentItem);
+        frame.field("hotbar", cachedHotbar);
+        frame.field("inventoryFood", cachedInventoryFood);
+        frame.field("inventorySpeedPotions", cachedInventorySpeedPotions);
+        frame.field("inventoryHealthPotions", cachedInventoryHealthPotions);
+        frame.field("inventoryPearls", cachedInventoryPearls);
+        frame.field("crosshairTargetType", getCrosshairTargetType());
+        frame.field("crosshairTargetId", crosshairEntity == null ? null : crosshairEntity.getEntityId());
+        frame.field("crosshairOnTarget", targetExists && crosshairEntity == target);
+        frame.field("crosshairDistance", crosshairEntity == null ? null : (double) mc.thePlayer.getDistanceToEntity(crosshairEntity));
+        frame.field("ticksSinceLastAttack", ticksSince(lastAttackTick, currentTick));
+        frame.field("ticksSinceLastPot", ticksSince(lastPotTick, currentTick));
+        frame.field("ticksSinceLastEat", ticksSince(lastEatTick, currentTick));
+        frame.field("ticksSinceLastSpeed", ticksSince(lastSpeedTick, currentTick));
+        frame.field("ticksSinceLastDamageTaken", ticksSince(lastDamageTakenTick, currentTick));
+        frame.field("ticksSinceLastHitLanded", ticksSince(lastHitLandedTick, currentTick));
+        frame.field("ticksSinceLastPearl", ticksSince(lastPearlTick, currentTick));
+        frame.field("ticksSinceLastUseItemPacket", ticksSince(lastUseItemPacketTick, currentTick));
+        frame.field("lastAttackTick", nullableTick(lastAttackTick));
+        frame.field("lastEatTick", nullableTick(lastEatTick));
+        frame.field("lastSpeedTick", nullableTick(lastSpeedTick));
+        frame.field("lastDamageTakenTick", nullableTick(lastDamageTakenTick));
+        frame.field("lastHitLandedTick", nullableTick(lastHitLandedTick));
+        frame.field("lastPearlTick", nullableTick(lastPearlTick));
+        frame.field("lastPotTick", nullableTick(lastPotTick));
+        frame.field("lastUseItemPacketTick", nullableTick(lastUseItemPacketTick));
+        frame.field("blockDistanceFront", cachedBlockDistanceFront);
+        frame.field("blockDistanceBack", cachedBlockDistanceBack);
+        frame.field("blockDistanceLeft", cachedBlockDistanceLeft);
+        frame.field("blockDistanceRight", cachedBlockDistanceRight);
+        frame.field("aForward", actionForward());
+        frame.field("aStrafe", actionStrafe());
+        frame.field("aJump", key(mc.gameSettings.keyBindJump) ? 1 : 0);
+        frame.field("aAttack", attackPressed || lastAttackTick == currentTick ? 1 : 0);
+        frame.field("aUseItem", useItemPressed || lastUseItemPacketTick == currentTick ? 1 : 0);
+        frame.field("targetExists", targetExists);
+        frame.field("targetRelX", targetRelX);
+        frame.field("targetRelY", targetRelY);
+        frame.field("targetRelZ", targetRelZ);
+        frame.field("targetDistance", targetDistance);
+        frame.field("targetMotionX", targetExists ? target.motionX : null);
+        frame.field("targetMotionY", targetExists ? target.motionY : null);
+        frame.field("targetMotionZ", targetExists ? target.motionZ : null);
+        frame.field("targetYaw", targetExists ? target.rotationYaw : null);
+        frame.field("targetPitch", targetExists ? target.rotationPitch : null);
+        frame.field("targetDeltaYaw", targetYawVel);
+        frame.field("targetDeltaPitch", targetPitchVel);
+        frame.field("targetHp", targetExists ? target.getHealth() : null);
+        frame.field("targetHurtTime", targetExists ? target.hurtTime : null);
+        frame.field("targetHurtResistantTime", targetExists ? target.hurtResistantTime : null);
+        frame.field("targetOnGround", targetExists ? target.onGround : null);
+        frame.field("targetSprinting", targetExists ? target.isSprinting() : null);
+        frame.field("targetSwingProgress", targetExists ? target.swingProgress : null);
+        frame.field("targetUsingItem", targetExists ? target.isUsingItem() : null);
+        frame.field("targetHeldItemType", targetExists ? getHeldItemType(target) : null);
+        frame.field("targetSpeedPotion", targetExists ? hasPotion(target, Potion.moveSpeed) : null);
+        frame.field("targetSpeedDurationTicks", targetExists ? getPotionDuration(target, Potion.moveSpeed): null);
+        frame.field("targetFood", targetExists ? target.getFoodStats().getFoodLevel() : null);
+        frame.field("lineOfSight", targetExists && crosshairEntity == target);
+        frame.field("yawDiffToTarget", yawDiffToTarget);
+        frame.field("pitchDiffToTarget", pitchDiffToTarget);
+        frame.field("hpDiff", hpDiff);
         writeFrame(frame);
 
     }
@@ -350,7 +371,42 @@ public class Recorder {
         return key.getIsKeyPressed();
     }
 
+    private void updateInventoryCacheIfNeeded(int currentTick) {
+        if (lastInventorySampleTick >= 0 && currentTick - lastInventorySampleTick < INVENTORY_SAMPLE_INTERVAL_TICKS) {
+            return;
+        }
+
+        lastInventorySampleTick = currentTick;
+        cachedHotbar = getHotbarSnapshot();
+        cachedInventoryFood = countFoodItems();
+        cachedInventorySpeedPotions = countSpeedPotions();
+        cachedInventoryHealthPotions = countSplashHealthPotions();
+        cachedInventoryPearls = countPearls();
+    }
+
+    private void updateSpatialCacheIfNeeded(int currentTick) {
+        if (lastSpatialSampleTick >= 0 && currentTick - lastSpatialSampleTick < SPATIAL_SAMPLE_INTERVAL_TICKS) {
+            return;
+        }
+
+        lastSpatialSampleTick = currentTick;
+        cachedBlockDistanceFront = blockDistanceInDirection(0.0F);
+        cachedBlockDistanceBack = blockDistanceInDirection(180.0F);
+        cachedBlockDistanceLeft = blockDistanceInDirection(-90.0F);
+        cachedBlockDistanceRight = blockDistanceInDirection(90.0F);
+        cachedWallFront = cachedBlockDistanceFront != null && cachedBlockDistanceFront <= WALL_CHECK_DISTANCE;
+        cachedWallBehind = cachedBlockDistanceBack != null && cachedBlockDistanceBack <= WALL_CHECK_DISTANCE;
+        cachedWallLeft = cachedBlockDistanceLeft != null && cachedBlockDistanceLeft <= WALL_CHECK_DISTANCE;
+        cachedWallRight = cachedBlockDistanceRight != null && cachedBlockDistanceRight <= WALL_CHECK_DISTANCE;
+    }
+
     private void installPacketHook() {
+        int hookCheckTick = mc.thePlayer == null ? (int) (System.currentTimeMillis() / 50L) : mc.thePlayer.ticksExisted;
+        if (hookedNetworkManager != null && lastPacketHookCheckTick >= 0 && hookCheckTick - lastPacketHookCheckTick < PACKET_HOOK_CHECK_INTERVAL_TICKS) {
+            return;
+        }
+        lastPacketHookCheckTick = hookCheckTick;
+
         NetHandlerPlayClient netHandler = mc.getNetHandler();
         if (netHandler == null) {
             hookedNetworkManager = null;
@@ -631,16 +687,144 @@ public class Recorder {
         boolean matches(ItemStack stack);
     }
 
-    private void writeFrame(Map<String, Object> frame) {
+    private void writeFrame(JsonLineBuilder frame) {
         if (framesWriter == null) return;
 
         try {
-            JSONL_GSON.toJson(frame, framesWriter);
+            framesWriter.write(frame.finish());
             framesWriter.write("\n");
-            framesWriter.flush();
+            framesSinceFlush++;
+            if (framesSinceFlush >= WRITER_FLUSH_INTERVAL_FRAMES) {
+                framesWriter.flush();
+                framesSinceFlush = 0;
+            }
         } catch (IOException ex) {
             ex.printStackTrace();
             sendMessage("Failed to write frame: " + ex.getMessage());
+        }
+    }
+
+    private void appendJsonArray(StringBuilder out, List<?> values) {
+        out.append('[');
+
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) out.append(',');
+            appendJsonValue(out, values.get(i));
+        }
+
+        out.append(']');
+    }
+
+    private void appendJsonValue(StringBuilder out, Object value) {
+        if (value == null) {
+            out.append("null");
+        } else if (value instanceof String) {
+            appendJsonString(out, (String) value);
+        } else if (value instanceof Number) {
+            appendJsonNumber(out, (Number) value);
+        } else if (value instanceof Boolean) {
+            out.append(((Boolean) value).booleanValue() ? "true" : "false");
+        } else if (value instanceof List) {
+            appendJsonArray(out, (List<?>) value);
+        } else {
+            appendJsonString(out, value.toString());
+        }
+    }
+
+    private void appendJsonNumber(StringBuilder out, Number number) {
+        if (number instanceof Float) {
+            float value = ((Float) number).floatValue();
+            if (Float.isNaN(value) || Float.isInfinite(value)) {
+                out.append("null");
+                return;
+            }
+        } else if (number instanceof Double) {
+            double value = ((Double) number).doubleValue();
+            if (Double.isNaN(value) || Double.isInfinite(value)) {
+                out.append("null");
+                return;
+            }
+        }
+
+        out.append(number.toString());
+    }
+
+    private void appendJsonString(StringBuilder out, String value) {
+        out.append('"');
+
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"':
+                    out.append("\\\"");
+                    break;
+                case '\\':
+                    out.append("\\\\");
+                    break;
+                case '\b':
+                    out.append("\\b");
+                    break;
+                case '\f':
+                    out.append("\\f");
+                    break;
+                case '\n':
+                    out.append("\\n");
+                    break;
+                case '\r':
+                    out.append("\\r");
+                    break;
+                case '\t':
+                    out.append("\\t");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        out.append("\\u");
+                        String hex = Integer.toHexString(c);
+                        for (int j = hex.length(); j < 4; j++) out.append('0');
+                        out.append(hex);
+                    } else {
+                        out.append(c);
+                    }
+                    break;
+            }
+        }
+
+        out.append('"');
+    }
+
+    private class JsonLineBuilder {
+        private final StringBuilder out;
+        private boolean first = true;
+        private boolean finished = false;
+
+        JsonLineBuilder(int initialCapacity) {
+            this.out = new StringBuilder(initialCapacity);
+            this.out.append('{');
+        }
+
+        JsonLineBuilder reset() {
+            out.setLength(0);
+            out.append('{');
+            first = true;
+            finished = false;
+            return this;
+        }
+
+        void field(String name, Object value) {
+            if (!first) out.append(',');
+            first = false;
+            appendJsonString(out, name);
+            out.append(':');
+            appendJsonValue(out, value);
+        }
+
+        String finish() {
+            if (!finished) {
+                out.append('}');
+                finished = true;
+            }
+
+            return out.toString();
         }
     }
 
@@ -707,6 +891,22 @@ public class Recorder {
         sessionId = createSessionId(startTimeMs);
         sessionDir = new File(ROOT_DIR, sessionId);
         recordingTickIndex = 0;
+        framesSinceFlush = 0;
+        lastInventorySampleTick = -1;
+        cachedHotbar = new ArrayList<String>();
+        cachedInventoryFood = 0;
+        cachedInventorySpeedPotions = 0;
+        cachedInventoryHealthPotions = 0;
+        cachedInventoryPearls = 0;
+        lastSpatialSampleTick = -1;
+        cachedWallBehind = false;
+        cachedWallLeft = false;
+        cachedWallRight = false;
+        cachedWallFront = false;
+        cachedBlockDistanceFront = null;
+        cachedBlockDistanceBack = null;
+        cachedBlockDistanceLeft = null;
+        cachedBlockDistanceRight = null;
         previousMyYaw = null;
         previousMyPitch = null;
         previousTargetYawById.clear();
@@ -758,11 +958,13 @@ public class Recorder {
         if (framesWriter == null) return;
 
         try {
+            framesWriter.flush();
             framesWriter.close();
         } catch (IOException ex) {
             ex.printStackTrace();
         }
 
+        framesSinceFlush = 0;
         framesWriter = null;
     }
 
