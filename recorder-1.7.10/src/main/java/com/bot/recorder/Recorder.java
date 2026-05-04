@@ -33,10 +33,13 @@ import net.minecraft.util.MathHelper;
 import net.minecraftforge.common.MinecraftForge;
 import org.lwjgl.input.Keyboard;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.zip.GZIPOutputStream;
 
 @Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "2.0")
 public class Recorder {
@@ -60,7 +63,7 @@ public class Recorder {
     private boolean recording = false;
     private String sessionId;
     private File sessionDir;
-    private FileWriter framesWriter;
+    private GZIPOutputStream framesWriter;
     private FileWriter eventsWriter;
     private long startTimeMs;
     private long endTimeMs;
@@ -788,8 +791,8 @@ public class Recorder {
         if (framesWriter == null) return;
 
         try {
-            framesWriter.write(frame.finish());
-            framesWriter.write("\n");
+            framesWriter.write(frame.finish().getBytes(StandardCharsets.UTF_8));
+            framesWriter.write('\n');
             framesSinceFlush++;
             if (framesSinceFlush >= WRITER_FLUSH_INTERVAL_FRAMES) {
                 framesWriter.flush();
@@ -1086,7 +1089,7 @@ public class Recorder {
         }
 
         try {
-            framesWriter = new FileWriter(new File(sessionDir, "frames.jsonl"));
+            framesWriter = new GZIPOutputStream(new FileOutputStream(new File(sessionDir, "frames.jsonl.gz")));
             eventsWriter = new FileWriter(new File(sessionDir, "events.jsonl"));
             writeSessionMeta();
             recording = true;
