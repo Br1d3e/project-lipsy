@@ -25,6 +25,8 @@ import net.minecraft.network.NetworkManager;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.client.C02PacketUseEntity;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
+import net.minecraft.network.play.client.C09PacketHeldItemChange;
+import net.minecraft.network.play.server.S12PacketEntityVelocity;
 import net.minecraft.potion.Potion;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.MathHelper;
@@ -58,6 +60,7 @@ public class Recorder {
     private String sessionId;
     private File sessionDir;
     private FileWriter framesWriter;
+    private FileWriter eventsWriter;
     private long startTimeMs;
     private long endTimeMs;
     private long startWorldTick;
@@ -78,10 +81,16 @@ public class Recorder {
     private int lastPearlTick = -1;
     private int lastPotTick = -1;
     private int lastUseItemPacketTick = -1;
+    private int lastVelocityEventTick = -1;
+    private int lastVelocityEntityId = -1;
+    private int lastVelocityMotionXRaw = 0;
+    private int lastVelocityMotionYRaw = 0;
+    private int lastVelocityMotionZRaw = 0;
     private NetworkManager hookedNetworkManager = null;
     private Channel hookedChannel = null;
     private int lastPacketHookCheckTick = -1;
     private int framesSinceFlush = 0;
+    private int eventsSinceFlush = 0;
     private int lastInventorySampleTick = -1;
     private List<String> cachedHotbar = new ArrayList<String>();
     private int cachedInventoryFood = 0;
@@ -98,6 +107,7 @@ public class Recorder {
     private Integer cachedBlockDistanceLeft = null;
     private Integer cachedBlockDistanceRight = null;
     private final JsonLineBuilder frameBuilder = new JsonLineBuilder(4096);
+    private final JsonLineBuilder eventBuilder = new JsonLineBuilder(4096);
 
     // === combo tracking ===
     private int myCombo = 0;
@@ -327,6 +337,10 @@ public class Recorder {
             targetCombo++;
             myCombo = 0;
             lastDamageTakenTick = recordingTickIndex;
+            writeEvent("DAMAGE_TAKEN", detailsBuilder()
+                    .field("hurtTime", mc.thePlayer.hurtTime)
+                    .field("hurtResistantTime", mc.thePlayer.hurtResistantTime)
+                    .field("health", mc.thePlayer.getHealth()));
         }
         lastMyHurtTime = mc.thePlayer.hurtTime;
     }
@@ -429,6 +443,15 @@ public class Recorder {
 
         ChannelDuplexHandler handler = new ChannelDuplexHandler() {
             @Override
+            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                if (msg instanceof Packet) {
+                    handleIncomingPacket((Packet) msg);
+                }
+
+                super.channelRead(ctx, msg);
+            }
+
+            @Override
             public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
                 if (msg instanceof Packet) {
                     handleOutgoingPacket((Packet) msg);
@@ -471,14 +494,23 @@ public class Recorder {
             handleUseEntityPacket((C02PacketUseEntity) packet, tick);
         } else if (packet instanceof C08PacketPlayerBlockPlacement) {
             handleUseItemPacket((C08PacketPlayerBlockPlacement) packet, tick);
+        } else if (packet instanceof C09PacketHeldItemChange) {
+            handleHeldItemChangePacket((C09PacketHeldItemChange) packet, tick);
         }
     }
 
     private void handleUseEntityPacket(C02PacketUseEntity packet, int tick) {
-        if (packet.getAction() != C02PacketUseEntity.Action.ATTACK) return;
+        Entity entity = mc.theWorld == null ? null : packet.getEntityFromWorld(mc.theWorld);
+        JsonLineBuilder details = detailsBuilder()
+                .field("action", packet.getAction() == null ? null : packet.getAction().name())
+                .field("targetEntityId", entity == null ? null : entity.getEntityId())
+                .field("targetEntityType", entity == null ? null : entity.getClass().getSimpleName());
 
-        lastAttackTick = tick;
-        lastHitLandedTick = tick;
+        if (packet.getAction() == C02PacketUseEntity.Action.ATTACK) {
+            lastAttackTick = tick;
+            lastHitLandedTick = tick;
+            writeEvent("ATTACK_PACKET_SENT", details);
+        }
     }
 
     private void handleUseItemPacket(C08PacketPlayerBlockPlacement packet, int tick) {
@@ -488,23 +520,81 @@ public class Recorder {
         }
 
         lastUseItemPacketTick = tick;
+        writeEvent("USE_ITEM_PACKET_SENT", detailsBuilder()
+                .field("itemType", getItemType(stack))
+                .field("displayName", getDisplayName(stack))
+                .field("placedBlockX", packet.getPlacedBlockX())
+                .field("placedBlockY", packet.getPlacedBlockY())
+                .field("placedBlockZ", packet.getPlacedBlockZ())
+                .field("placedBlockDirection", packet.getPlacedBlockDirection()));
 
         if (isSplashHealthPotion(stack)) {
             lastPotTick = tick;
+            writeEvent("POTION_USE", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
         }
 
         if (isFood(stack)) {
             lastEatTick = tick;
+            writeEvent("FOOD_EAT", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
         }
 
         if (isSpeedPotion(stack)) {
             lastSpeedTick = tick;
+            writeEvent("SPEED_USE", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
         }
 
         if (isPearl(stack)) {
             lastPearlTick = tick;
             pearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
+            writeEvent("PEARL_THROW", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
         }
+    }
+
+    private void handleHeldItemChangePacket(C09PacketHeldItemChange packet, int tick) {
+        writeEvent("SLOT_CHANGED", detailsBuilder()
+                .field("slot", packet.getSlotId()));
+    }
+
+    private void handleIncomingPacket(Packet packet) {
+        if (!recording) return;
+
+        if (packet instanceof S12PacketEntityVelocity) {
+            handleEntityVelocityPacket((S12PacketEntityVelocity) packet);
+        }
+    }
+
+    private void handleEntityVelocityPacket(S12PacketEntityVelocity packet) {
+        int entityId = packet.func_149412_c();
+        boolean isSelf = mc.thePlayer != null && entityId == mc.thePlayer.getEntityId();
+        if (!isSelf) return;
+
+        int motionXRaw = packet.func_149411_d();
+        int motionYRaw = packet.func_149410_e();
+        int motionZRaw = packet.func_149409_f();
+        int tick = recordingTickIndex;
+        if (lastVelocityEventTick == tick
+                && lastVelocityEntityId == entityId
+                && lastVelocityMotionXRaw == motionXRaw
+                && lastVelocityMotionYRaw == motionYRaw
+                && lastVelocityMotionZRaw == motionZRaw) {
+            return;
+        }
+
+        lastVelocityEventTick = tick;
+        lastVelocityEntityId = entityId;
+        lastVelocityMotionXRaw = motionXRaw;
+        lastVelocityMotionYRaw = motionYRaw;
+        lastVelocityMotionZRaw = motionZRaw;
+
+        writeEvent("VELOCITY_PACKET_RECEIVED", detailsBuilder()
+                .field("entityId", entityId)
+                .field("isSelf", isSelf)
+                .field("motionXRaw", motionXRaw)
+                .field("motionYRaw", motionYRaw)
+                .field("motionZRaw", motionZRaw)
+                .field("motionX", motionXRaw / 8000.0D)
+                .field("motionY", motionYRaw / 8000.0D)
+                .field("motionZ", motionZRaw / 8000.0D));
     }
 
     private String getHeldItemType(EntityPlayer player) {
@@ -594,6 +684,10 @@ public class Recorder {
 
     private String getDisplayNameLower(ItemStack stack) {
         return stack == null ? "" : stack.getDisplayName().toLowerCase(Locale.US);
+    }
+
+    private String getDisplayName(ItemStack stack) {
+        return stack == null ? null : stack.getDisplayName();
     }
 
     private String getItemTypeLower(ItemStack stack) {
@@ -704,6 +798,45 @@ public class Recorder {
         }
     }
 
+    private void writeEvent(JsonLineBuilder event) {
+        if (eventsWriter == null) return;
+
+        try {
+            eventsWriter.write(event.finish());
+            eventsWriter.write("\n");
+            eventsSinceFlush++;
+            if (eventsSinceFlush >= WRITER_FLUSH_INTERVAL_FRAMES) {
+                eventsWriter.flush();
+                eventsSinceFlush = 0;
+            }
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            sendMessage("Failed to write event: " + ex.getMessage());
+        }
+    }
+
+    private void writeEvent(String type, JsonLineBuilder details) {
+        if (eventsWriter == null) return;
+
+        JsonLineBuilder event = eventBuilder.reset();
+        event.field("type", type);
+        event.field("recording_tick_index", recordingTickIndex);
+        event.field("world_tick", getWorldTick());
+        event.field("time_ms", System.currentTimeMillis());
+        event.field("details", new RawJson(details.finish()));
+        writeEvent(event);
+    }
+
+    private JsonLineBuilder detailsBuilder() {
+        return new JsonLineBuilder(512);
+    }
+
+    private JsonLineBuilder itemDetails(ItemStack stack) {
+        return detailsBuilder()
+                .field("itemType", getItemType(stack))
+                .field("displayName", getDisplayName(stack));
+    }
+
     private void appendJsonArray(StringBuilder out, List<?> values) {
         out.append('[');
 
@@ -726,6 +859,8 @@ public class Recorder {
             out.append(((Boolean) value).booleanValue() ? "true" : "false");
         } else if (value instanceof List) {
             appendJsonArray(out, (List<?>) value);
+        } else if (value instanceof RawJson) {
+            out.append(((RawJson) value).json);
         } else {
             appendJsonString(out, value.toString());
         }
@@ -810,12 +945,13 @@ public class Recorder {
             return this;
         }
 
-        void field(String name, Object value) {
+        JsonLineBuilder field(String name, Object value) {
             if (!first) out.append(',');
             first = false;
             appendJsonString(out, name);
             out.append(':');
             appendJsonValue(out, value);
+            return this;
         }
 
         String finish() {
@@ -825,6 +961,14 @@ public class Recorder {
             }
 
             return out.toString();
+        }
+    }
+
+    private static class RawJson {
+        private final String json;
+
+        RawJson(String json) {
+            this.json = json;
         }
     }
 
@@ -892,6 +1036,7 @@ public class Recorder {
         sessionDir = new File(ROOT_DIR, sessionId);
         recordingTickIndex = 0;
         framesSinceFlush = 0;
+        eventsSinceFlush = 0;
         lastInventorySampleTick = -1;
         cachedHotbar = new ArrayList<String>();
         cachedInventoryFood = 0;
@@ -922,6 +1067,11 @@ public class Recorder {
         lastPearlTick = -1;
         lastPotTick = -1;
         lastUseItemPacketTick = -1;
+        lastVelocityEventTick = -1;
+        lastVelocityEntityId = -1;
+        lastVelocityMotionXRaw = 0;
+        lastVelocityMotionYRaw = 0;
+        lastVelocityMotionZRaw = 0;
         myCombo = 0;
         targetCombo = 0;
         lastMyHurtTime = 0;
@@ -934,13 +1084,20 @@ public class Recorder {
 
         try {
             framesWriter = new FileWriter(new File(sessionDir, "frames.jsonl"));
+            eventsWriter = new FileWriter(new File(sessionDir, "events.jsonl"));
             writeSessionMeta();
             recording = true;
+            writeEvent("RECORD_START", detailsBuilder()
+                    .field("sessionId", sessionId)
+                    .field("serverIp", serverIp)
+                    .field("startTimeMs", startTimeMs)
+                    .field("startWorldTick", startWorldTick));
             sendMessage("Recording started: " + sessionId);
         } catch (IOException ex) {
             ex.printStackTrace();
             sendMessage("Failed to start recording: " + ex.getMessage());
             closeFramesWriter();
+            closeEventsWriter();
         }
     }
 
@@ -949,8 +1106,13 @@ public class Recorder {
 
         recording = false;
         endTimeMs = System.currentTimeMillis();
+        writeEvent("RECORD_STOP", detailsBuilder()
+                .field("sessionId", sessionId)
+                .field("endTimeMs", endTimeMs)
+                .field("endWorldTick", getWorldTick()));
         writeSessionMeta();
         closeFramesWriter();
+        closeEventsWriter();
         sendMessage("Recording stopped: " + sessionId);
     }
 
@@ -966,6 +1128,20 @@ public class Recorder {
 
         framesSinceFlush = 0;
         framesWriter = null;
+    }
+
+    private void closeEventsWriter() {
+        if (eventsWriter == null) return;
+
+        try {
+            eventsWriter.flush();
+            eventsWriter.close();
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
+
+        eventsSinceFlush = 0;
+        eventsWriter = null;
     }
 
 
