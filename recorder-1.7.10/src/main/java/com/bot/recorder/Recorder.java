@@ -54,6 +54,7 @@ public class Recorder {
     public static final File ROOT_DIR = new File(Minecraft.getMinecraft().mcDataDir, "ProjectLipsy/recordings");
 
     private KeyBinding recorderGuiKey;
+    private RecorderGui recorderOverlay;
 
     // === record state ===
     private boolean recording = false;
@@ -122,7 +123,9 @@ public class Recorder {
 
         recorderGuiKey = new KeyBinding("Recorder GUI", Keyboard.KEY_RSHIFT, "Project Lipsy");
         ClientRegistry.registerKeyBinding(recorderGuiKey);
+        recorderOverlay = new RecorderGui(this);
         MinecraftForge.EVENT_BUS.register(this);
+        MinecraftForge.EVENT_BUS.register(recorderOverlay);
         FMLCommonHandler.instance().bus().register(this);
     }
 
@@ -1146,5 +1149,11 @@ public class Recorder {
 
 
     public boolean isRecording() {return recording;}
+
+    public String getSessionId() {return sessionId;}
+
+    public int getRecordingTickIndex() {return recordingTickIndex;}
+
+    public long getCurrentTimeMs() {return System.currentTimeMillis();}
 
 }
