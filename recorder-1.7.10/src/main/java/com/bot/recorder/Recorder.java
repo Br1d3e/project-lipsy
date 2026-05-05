@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import cpw.mods.fml.client.registry.ClientRegistry;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
+import cpw.mods.fml.common.ObfuscationReflectionHelper;
 import cpw.mods.fml.common.event.FMLInitializationEvent;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.InputEvent;
@@ -93,6 +94,8 @@ public class Recorder {
     private NetworkManager hookedNetworkManager = null;
     private Channel hookedChannel = null;
     private int lastPacketHookCheckTick = -1;
+    private boolean packetHookInstalledLoggedThisSession = false;
+    private boolean packetHookFailedLoggedThisSession = false;
     private int framesSinceFlush = 0;
     private int eventsSinceFlush = 0;
     private int lastInventorySampleTick = -1;
@@ -229,7 +232,6 @@ public class Recorder {
         JsonLineBuilder frame = frameBuilder.reset();
         frame.field("recordingTickIndex", recordingTickIndex++);
         frame.field("timeMs", time);
-        frame.field("ts", time);
         frame.field("worldTick", getWorldTick());
         frame.field("myPosX", mc.thePlayer.posX);
         frame.field("myPosY", mc.thePlayer.posY);
@@ -254,13 +256,8 @@ public class Recorder {
         frame.field("myHasSpeedPotion", hasPotion(mc.thePlayer, Potion.moveSpeed));
         frame.field("mySpeedDurationTicks", getPotionDuration(mc.thePlayer, Potion.moveSpeed));
         frame.field("myFoodLevel", mc.thePlayer.getFoodStats().getFoodLevel());
-        frame.field("myLineOfSight", crosshairEntity != null);
         frame.field("myCombo", myCombo);
         frame.field("targetCombo", targetCombo);
-        frame.field("wallBehind", cachedWallBehind);
-        frame.field("wallLeft", cachedWallLeft);
-        frame.field("wallRight", cachedWallRight);
-        frame.field("wallFront", cachedWallFront);
         frame.field("pearlCooldownTicksRemaining", pearlCooldownTicksRemaining);
         frame.field("pearlCooldownSecondsRemaining", pearlCooldownTicksRemaining / 20.0F);
         frame.field("selectedSlot", mc.thePlayer.inventory.currentItem);
@@ -281,14 +278,14 @@ public class Recorder {
         frame.field("ticksSinceLastHitLanded", ticksSince(lastHitLandedTick, currentTick));
         frame.field("ticksSinceLastPearl", ticksSince(lastPearlTick, currentTick));
         frame.field("ticksSinceLastUseItemPacket", ticksSince(lastUseItemPacketTick, currentTick));
-        frame.field("lastAttackTick", nullableTick(lastAttackTick));
-        frame.field("lastEatTick", nullableTick(lastEatTick));
-        frame.field("lastSpeedTick", nullableTick(lastSpeedTick));
-        frame.field("lastDamageTakenTick", nullableTick(lastDamageTakenTick));
-        frame.field("lastHitLandedTick", nullableTick(lastHitLandedTick));
-        frame.field("lastPearlTick", nullableTick(lastPearlTick));
-        frame.field("lastPotTick", nullableTick(lastPotTick));
-        frame.field("lastUseItemPacketTick", nullableTick(lastUseItemPacketTick));
+//        frame.field("lastAttackTick", nullableTick(lastAttackTick));
+//        frame.field("lastEatTick", nullableTick(lastEatTick));
+//        frame.field("lastSpeedTick", nullableTick(lastSpeedTick));
+//        frame.field("lastDamageTakenTick", nullableTick(lastDamageTakenTick));
+//        frame.field("lastHitLandedTick", nullableTick(lastHitLandedTick));
+//        frame.field("lastPearlTick", nullableTick(lastPearlTick));
+//        frame.field("lastPotTick", nullableTick(lastPotTick));
+//        frame.field("lastUseItemPacketTick", nullableTick(lastUseItemPacketTick));
         frame.field("blockDistanceFront", cachedBlockDistanceFront);
         frame.field("blockDistanceBack", cachedBlockDistanceBack);
         frame.field("blockDistanceLeft", cachedBlockDistanceLeft);
@@ -435,15 +432,25 @@ public class Recorder {
         }
 
         NetworkManager networkManager = netHandler.getNetworkManager();
-        if (networkManager == null || networkManager == hookedNetworkManager) return;
+        if (networkManager == null) return;
 
         Channel channel = getNetworkChannel(networkManager);
-        if (channel == null) return;
+        if (channel == null) {
+            hookedNetworkManager = null;
+            hookedChannel = null;
+            logPacketHookStatus("PACKET_HOOK_FAILED", "NetworkManager channel field not found");
+            return;
+        }
 
         ChannelPipeline pipeline = channel.pipeline();
         if (pipeline.get(PACKET_HOOK_NAME) != null) {
             hookedNetworkManager = networkManager;
             hookedChannel = channel;
+            logPacketHookStatus("PACKET_HOOK_INSTALLED", "existing handler");
+            return;
+        }
+
+        if (networkManager == hookedNetworkManager) {
             return;
         }
 
@@ -475,21 +482,71 @@ public class Recorder {
             }
             hookedNetworkManager = networkManager;
             hookedChannel = channel;
-        } catch (IllegalArgumentException ignored) {
-            hookedNetworkManager = networkManager;
-            hookedChannel = channel;
+            logPacketHookStatus("PACKET_HOOK_INSTALLED", "inserted handler");
+        } catch (IllegalArgumentException ex) {
+            if (pipeline.get(PACKET_HOOK_NAME) != null) {
+                hookedNetworkManager = networkManager;
+                hookedChannel = channel;
+                logPacketHookStatus("PACKET_HOOK_INSTALLED", "handler already present after insert race");
+            } else {
+                hookedNetworkManager = null;
+                hookedChannel = null;
+                logPacketHookStatus("PACKET_HOOK_FAILED", ex.getClass().getSimpleName() + ": " + ex.getMessage());
+            }
         }
     }
 
     private Channel getNetworkChannel(NetworkManager networkManager) {
         try {
-            Field channelField = NetworkManager.class.getDeclaredField("channel");
-            channelField.setAccessible(true);
-
-            return (Channel) channelField.get(networkManager);
-        } catch (Exception ex) {
-            return null;
+            Channel channel = ObfuscationReflectionHelper.getPrivateValue(NetworkManager.class, networkManager, "field_150746_k");
+            if (channel != null) {
+                return channel;
+            }
+        } catch (Exception ignored) {
         }
+
+        String[] channelFieldNames = {"channel", "field_150746_k"};
+        for (String fieldName : channelFieldNames) {
+            try {
+                Field channelField = NetworkManager.class.getDeclaredField(fieldName);
+                channelField.setAccessible(true);
+                Object value = channelField.get(networkManager);
+                if (value instanceof Channel) {
+                    return (Channel) value;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        for (Field field : NetworkManager.class.getDeclaredFields()) {
+            if (!Channel.class.isAssignableFrom(field.getType())) continue;
+
+            try {
+                field.setAccessible(true);
+                Object value = field.get(networkManager);
+                if (value instanceof Channel) {
+                    return (Channel) value;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        return null;
+    }
+
+    private void logPacketHookStatus(String type, String message) {
+        if (!recording) return;
+        if ("PACKET_HOOK_INSTALLED".equals(type)) {
+            if (packetHookInstalledLoggedThisSession) return;
+            packetHookInstalledLoggedThisSession = true;
+        } else if ("PACKET_HOOK_FAILED".equals(type)) {
+            if (packetHookFailedLoggedThisSession) return;
+            packetHookFailedLoggedThisSession = true;
+        }
+
+        writeEvent(type, detailsBuilder()
+                .field("message", message)
+                .field("hasNetworkManager", mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null));
     }
 
     private void handleOutgoingPacket(Packet packet) {
@@ -1078,6 +1135,9 @@ public class Recorder {
         lastVelocityMotionXRaw = 0;
         lastVelocityMotionYRaw = 0;
         lastVelocityMotionZRaw = 0;
+        packetHookInstalledLoggedThisSession = false;
+        packetHookFailedLoggedThisSession = false;
+        lastPacketHookCheckTick = -1;
         myCombo = 0;
         targetCombo = 0;
         lastMyHurtTime = 0;
