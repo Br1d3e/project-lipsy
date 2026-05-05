@@ -227,17 +227,19 @@ public class Recorder {
         previousMyPitch = mc.thePlayer.rotationPitch;
 
         boolean targetExists = target != null;
+        int targetId = -1;
         Double targetRelX = null;
         Double targetRelY = null;
         Double targetRelZ = null;
         Double targetDistance = null;
         Double yawDiffToTarget = null;
         Double pitchDiffToTarget = null;
-        Double hpDiff = null;
+        Double hpDiffRaw = null;
         Float targetYawVel = null;
         Float targetPitchVel = null;
 
         if (targetExists) {
+            targetId = target.getEntityId();
             targetRelX = target.posX - mc.thePlayer.posX;
             targetRelY = (target.posY + target.getEyeHeight()) - (mc.thePlayer.posY + mc.thePlayer.getEyeHeight());
             targetRelZ = target.posZ - mc.thePlayer.posZ;
@@ -247,9 +249,8 @@ public class Recorder {
             double targetAimPitch = -Math.toDegrees(Math.atan2(targetRelY, distanceXZ));
             yawDiffToTarget = (double) MathHelper.wrapAngleTo180_float((float) targetAimYaw - mc.thePlayer.rotationYaw);
             pitchDiffToTarget = (double) MathHelper.wrapAngleTo180_float((float) targetAimPitch - mc.thePlayer.rotationPitch);
-            hpDiff = (double) (mc.thePlayer.getHealth() - target.getHealth());
+            hpDiffRaw = (double) (mc.thePlayer.getHealth() - target.getHealth());
 
-            int targetId = target.getEntityId();
             Float previousTargetYaw = previousTargetYawById.get(targetId);
             Float previousTargetPitch = previousTargetPitchById.get(targetId);
             targetYawVel = previousTargetYaw == null ? null : MathHelper.wrapAngleTo180_float(target.rotationYaw - previousTargetYaw);
@@ -323,6 +324,7 @@ public class Recorder {
         frame.field("aAttack", attackPressed || lastAttackTick == currentTick ? 1 : 0);
         frame.field("aUseItem", useItemPressed || lastUseItemPacketTick == currentTick ? 1 : 0);
         frame.field("targetExists", targetExists);
+        frame.field("targetId", targetExists ? targetId : null);
         frame.field("targetRelX", targetRelX);
         frame.field("targetRelY", targetRelY);
         frame.field("targetRelZ", targetRelZ);
@@ -357,7 +359,8 @@ public class Recorder {
         frame.field("lineOfSight", targetExists && crosshairEntity == target);
         frame.field("yawDiffToTarget", yawDiffToTarget);
         frame.field("pitchDiffToTarget", pitchDiffToTarget);
-        frame.field("hpDiff", hpDiff);
+        frame.field("hpDiffRaw", hpDiffRaw);
+        frame.field("hpDiff", targetExists ? targetHpTracker.getEstimatedTargetHp() - mc.thePlayer.getHealth() : null);
         writeFrame(frame);
 
     }
