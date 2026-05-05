@@ -5,7 +5,6 @@ import com.google.gson.GsonBuilder;
 import cpw.mods.fml.client.registry.ClientRegistry;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
-import cpw.mods.fml.common.ObfuscationReflectionHelper;
 import cpw.mods.fml.common.event.FMLInitializationEvent;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.InputEvent;
@@ -180,7 +179,7 @@ public class Recorder {
             lastSpeedTick = currentTick;
         }
 
-        if (isPearl(heldItem) && useItemStarted && pearlCooldownTicksRemaining == 0) {
+        if (isPearl(heldItem) && useItemStarted && pearlCooldownTicksRemaining <= 0) {
             lastPearlTick = currentTick;
             pearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
         } else if (pearlCooldownTicksRemaining > 0) {
@@ -497,14 +496,6 @@ public class Recorder {
     }
 
     private Channel getNetworkChannel(NetworkManager networkManager) {
-        try {
-            Channel channel = ObfuscationReflectionHelper.getPrivateValue(NetworkManager.class, networkManager, "field_150746_k");
-            if (channel != null) {
-                return channel;
-            }
-        } catch (Exception ignored) {
-        }
-
         String[] channelFieldNames = {"channel", "field_150746_k"};
         for (String fieldName : channelFieldNames) {
             try {
@@ -762,23 +753,25 @@ public class Recorder {
     private boolean isFood(ItemStack stack) {
         String type = getItemTypeLower(stack);
 
-        return type.contains("cooked_beef") || type.contains("golden_carrot");
+        return type.contains("beefcooked") || type.contains("carrotgolden");
     }
 
     private boolean isSpeedPotion(ItemStack stack) {
         String name = getDisplayNameLower(stack);
+        String type = getItemTypeLower(stack);
 
-        return name.contains("swiftness") && name.contains("ii");
+        return name.contains("swiftness") && type.contains("potion");
     }
 
     private boolean isSplashHealthPotion(ItemStack stack) {
         String name = getDisplayNameLower(stack);
+        String type = getItemTypeLower(stack);
 
-        return name.contains("splash") && (name.contains("instant health ii") || name.contains("healing ii"));
+        return type.contains("potion") && name.contains("splash") && (name.contains("instant health") || name.contains("healing"));
     }
 
     private boolean isPearl(ItemStack stack) {
-        return getItemTypeLower(stack).contains("ender_pearl");
+        return getItemTypeLower(stack).contains("enderpearl");
     }
 
     private boolean wallInDirection(float yawOffset) {
