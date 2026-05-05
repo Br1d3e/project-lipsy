@@ -2,6 +2,7 @@ package com.bot.recorder;
 
 import com.bot.recorder.recordWriter.JsonLineBuilder;
 import com.bot.recorder.recordWriter.RecordWriter;
+import com.bot.recorder.targetTracker.TargetFoodTracker;
 import com.bot.recorder.targetTracker.TargetHpTracker;
 import cpw.mods.fml.client.registry.ClientRegistry;
 import cpw.mods.fml.common.FMLCommonHandler;
@@ -49,6 +50,11 @@ public class Recorder {
         }
     });
     private final TargetHpTracker targetHpTracker = new TargetHpTracker(mc, new TargetHpTracker.EventSink() {
+        public void writeEvent(String type, JsonLineBuilder details) {
+            Recorder.this.writeEvent(type, details);
+        }
+    });
+    private final TargetFoodTracker targetFoodTracker = new TargetFoodTracker(new TargetFoodTracker.EventSink() {
         public void writeEvent(String type, JsonLineBuilder details) {
             Recorder.this.writeEvent(type, details);
         }
@@ -166,6 +172,7 @@ public class Recorder {
         EntityPlayer target = findClosestPlayer();
         int currentTick = recordingTickIndex;
         targetHpTracker.updateTargetState(target, currentTick);
+        targetFoodTracker.updateTargetState(target, currentTick);
         updateComboTargetState(target);
 
         if (target != null) {
@@ -175,6 +182,11 @@ public class Recorder {
         updateInventoryCacheIfNeeded(currentTick);
         updateSpatialCacheIfNeeded(currentTick);
         targetHpTracker.updateTargetPotionState(target, currentTick);
+        targetFoodTracker.updateMovementExhaustion(target);
+        targetFoodTracker.finishFoodTick();
+        if (target != null && targetHpTracker.updateNaturalRegen(currentTick, targetFoodTracker.getTargetHunger())) {
+            targetFoodTracker.addNaturalRegenExhaustion();
+        }
         boolean useItemPressed = key(mc.gameSettings.keyBindUseItem);
         boolean useItemStarted = useItemPressed && !previousUseItemPressed;
         boolean attackPressed = key(mc.gameSettings.keyBindAttack);
@@ -301,14 +313,6 @@ public class Recorder {
         frame.field("ticksSinceLastPearl", ticksSince(lastPearlTick, currentTick));
         frame.field("ticksSinceLastEnemyPearl", ticksSince(lastEnemyPearlTick, currentTick));
         frame.field("ticksSinceLastUseItemPacket", ticksSince(lastUseItemPacketTick, currentTick));
-//        frame.field("lastAttackTick", nullableTick(lastAttackTick));
-//        frame.field("lastEatTick", nullableTick(lastEatTick));
-//        frame.field("lastSpeedTick", nullableTick(lastSpeedTick));
-//        frame.field("lastDamageTakenTick", nullableTick(lastDamageTakenTick));
-//        frame.field("lastHitLandedTick", nullableTick(lastHitLandedTick));
-//        frame.field("lastPearlTick", nullableTick(lastPearlTick));
-//        frame.field("lastPotTick", nullableTick(lastPotTick));
-//        frame.field("lastUseItemPacketTick", nullableTick(lastUseItemPacketTick));
         frame.field("blockDistanceFront", cachedBlockDistanceFront);
         frame.field("blockDistanceBack", cachedBlockDistanceBack);
         frame.field("blockDistanceLeft", cachedBlockDistanceLeft);
@@ -344,7 +348,12 @@ public class Recorder {
         frame.field("targetHeldItemType", targetExists ? itemsHandler.getHeldItemType(target) : null);
         frame.field("targetSpeedPotion", targetExists ? itemsHandler.hasPotion(target, Potion.moveSpeed) : null);
         frame.field("targetSpeedDurationTicks", targetExists ? itemsHandler.getPotionDuration(target, Potion.moveSpeed): null);
-        frame.field("targetFood", targetExists ? target.getFoodStats().getFoodLevel() : null);
+        frame.field("targetEstimatedSaturation", targetExists ? targetFoodTracker.getTargetSaturation() : null);
+        frame.field("targetEstimatedExhaustion", targetExists ? targetFoodTracker.getTargetExhaustion() : null);
+        frame.field("targetEstimatedFoodTimer", targetExists ? targetHpTracker.getNaturalRegenTimer() : null);
+        frame.field("targetFood", targetExists ? targetFoodTracker.getTargetHunger() : null);
+        frame.field("targetFoodLevel", targetExists ? targetFoodTracker.getTargetHunger() : null);
+        frame.field("targetFoodRaw", targetExists ? target.getFoodStats().getFoodLevel() : null);
         frame.field("lineOfSight", targetExists && crosshairEntity == target);
         frame.field("yawDiffToTarget", yawDiffToTarget);
         frame.field("pitchDiffToTarget", pitchDiffToTarget);
@@ -361,6 +370,7 @@ public class Recorder {
             targetCombo = 0;
             lastHitLandedTick = recordingTickIndex;
             targetHpTracker.applyEstimatedTargetDamage(recordingTickIndex);
+            targetFoodTracker.addTakingDamageExhaustion();
         }
         lastTargetHurtTime = target.hurtTime;
 
@@ -368,6 +378,7 @@ public class Recorder {
             targetCombo++;
             myCombo = 0;
             lastDamageTakenTick = recordingTickIndex;
+            targetFoodTracker.addSuccessfulMeleeAttackExhaustion();
             writeEvent("DAMAGE_TAKEN", detailsBuilder()
                     .field("hurtTime", mc.thePlayer.hurtTime)
                     .field("hurtResistantTime", mc.thePlayer.hurtResistantTime)
@@ -759,6 +770,7 @@ public class Recorder {
         lastTargetHurtTime = 0;
         comboTrackedTargetId = -1;
         targetHpTracker.reset();
+        targetFoodTracker.reset();
 
         try {
             recordWriter.startSession(startTimeMs, startWorldTick, serverIp);

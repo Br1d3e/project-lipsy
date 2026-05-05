@@ -30,10 +30,13 @@ public class TargetHpTracker {
     private static final int PROTECTION_LEVEL = 2;
     private static final float INSTANT_HEALTH_II_BASE_HEAL_HP = 8.0F;
     private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.1D;
+    private static final int NATURAL_REGEN_INTERVAL_TICKS = 80;
+    private static final float NATURAL_REGEN_HEAL_HP = 1.0F;
     private int trackedTargetId = -1;
     private float estimatedTargetHp = TARGET_HP_DEFAULT;
     private float lastEstimatedTargetDamage = 0.0F;
     private float lastEstimatedTargetHeal = 0.0F;
+    private int naturalRegenTimer = 0;
     private final Map<Integer, TrackedPotion> targetPotions = new HashMap<Integer, TrackedPotion>();
     private final Set<Integer> processedTargetPotionEntityIds = new HashSet<Integer>();
 
@@ -47,6 +50,7 @@ public class TargetHpTracker {
         estimatedTargetHp = TARGET_HP_DEFAULT;
         lastEstimatedTargetDamage = 0.0F;
         lastEstimatedTargetHeal = 0.0F;
+        naturalRegenTimer = 0;
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
     }
@@ -60,6 +64,7 @@ public class TargetHpTracker {
         estimatedTargetHp = TARGET_HP_DEFAULT;
         lastEstimatedTargetDamage = 0.0F;
         lastEstimatedTargetHeal = 0.0F;
+        naturalRegenTimer = 0;
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
 
@@ -86,6 +91,10 @@ public class TargetHpTracker {
         return TARGET_HP_DEFAULT;
     }
 
+    public int getNaturalRegenTimer() {
+        return naturalRegenTimer;
+    }
+
     public void applyEstimatedTargetDamage(int currentTick) {
         float damage = calculateEstimatedSwordDamage();
         estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
@@ -105,6 +114,29 @@ public class TargetHpTracker {
         float protectionMultiplier = (25.0F - epf) / 25.0F;
 
         return preArmorDamage * armorMultiplier * protectionMultiplier;
+    }
+
+    public boolean updateNaturalRegen(int currentTick, int targetFoodLevel) {
+        if (targetFoodLevel >= 18 && shouldHeal()) {
+            naturalRegenTimer++;
+            if (naturalRegenTimer >= NATURAL_REGEN_INTERVAL_TICKS) {
+                estimatedTargetHp = clampFloat(estimatedTargetHp + NATURAL_REGEN_HEAL_HP, 0.0F, TARGET_HP_DEFAULT);
+                lastEstimatedTargetHeal = NATURAL_REGEN_HEAL_HP;
+                lastEstimatedTargetDamage = 0.0F;
+                naturalRegenTimer = 0;
+                writeEvent("TARGET_ESTIMATED_NATURAL_REGEN", detailsBuilder()
+                        .field("targetEntityId", trackedTargetId < 0 ? null : trackedTargetId)
+                        .field("healHp", NATURAL_REGEN_HEAL_HP)
+                        .field("estimatedTargetHp", estimatedTargetHp)
+                        .field("targetFoodLevel", targetFoodLevel)
+                        .field("tick", currentTick));
+                return true;
+            }
+        } else {
+            naturalRegenTimer = 0;
+        }
+
+        return false;
     }
 
     public void updateTargetPotionState(EntityPlayer target, int currentTick) {
@@ -226,6 +258,10 @@ public class TargetHpTracker {
 
     private float clampFloat(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private boolean shouldHeal() {
+        return estimatedTargetHp > 0.0F && estimatedTargetHp < TARGET_HP_DEFAULT;
     }
 
     private JsonLineBuilder detailsBuilder() {
