@@ -183,6 +183,8 @@ public class Recorder {
         updateSpatialCacheIfNeeded(currentTick);
         targetHpTracker.updateTargetPotionState(target, currentTick);
         targetFoodTracker.updateMovementExhaustion(target);
+        targetFoodTracker.updateFoodUse(target, target == null ? null : target.getHeldItem(),
+                target != null && itemsHandler.isFood(target.getHeldItem()), currentTick);
         targetFoodTracker.finishFoodTick();
         if (target != null && targetHpTracker.updateNaturalRegen(currentTick, targetFoodTracker.getTargetHunger())) {
             targetFoodTracker.addNaturalRegenExhaustion();

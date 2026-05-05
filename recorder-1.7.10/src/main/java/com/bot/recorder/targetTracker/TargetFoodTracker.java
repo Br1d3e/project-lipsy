@@ -2,6 +2,8 @@ package com.bot.recorder.targetTracker;
 
 import com.bot.recorder.recordWriter.JsonLineBuilder;
 import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.item.ItemFood;
+import net.minecraft.item.ItemStack;
 
 public class TargetFoodTracker {
     public interface EventSink {
@@ -31,6 +33,9 @@ public class TargetFoodTracker {
     private double previousPosZ;
     private boolean previousOnGround;
     private boolean hasPreviousTargetPosition = false;
+    private boolean targetWasUsingFood = false;
+    private int targetFoodUseStartTick = -1;
+    private ItemStack targetFoodUseStack = null;
 
     public TargetFoodTracker(EventSink eventSink) {
         this.eventSink = eventSink;
@@ -43,6 +48,9 @@ public class TargetFoodTracker {
         targetExhaustion = DEFAULT_EXHAUSTION;
         foodTimer = 0;
         hasPreviousTargetPosition = false;
+        targetWasUsingFood = false;
+        targetFoodUseStartTick = -1;
+        targetFoodUseStack = null;
     }
 
     public void updateTargetState(EntityPlayer target, int currentTick) {
@@ -55,6 +63,9 @@ public class TargetFoodTracker {
         targetExhaustion = DEFAULT_EXHAUSTION;
         foodTimer = 0;
         hasPreviousTargetPosition = false;
+        targetWasUsingFood = false;
+        targetFoodUseStartTick = -1;
+        targetFoodUseStack = null;
 
         if (target != null) {
             rememberTargetPosition(target);
@@ -91,6 +102,39 @@ public class TargetFoodTracker {
         }
 
         rememberTargetPosition(target);
+    }
+
+    public void updateFoodUse(EntityPlayer target, ItemStack heldItem, boolean heldItemIsFood, int currentTick) {
+        if (target == null) {
+            targetWasUsingFood = false;
+            targetFoodUseStartTick = -1;
+            targetFoodUseStack = null;
+            return;
+        }
+
+        boolean usingFood = target.isUsingItem() && heldItemIsFood && heldItem != null && heldItem.getItem() instanceof ItemFood;
+        if (usingFood) {
+            if (!targetWasUsingFood) {
+                targetFoodUseStartTick = currentTick;
+                targetFoodUseStack = heldItem.copy();
+            } else if (targetFoodUseStack == null) {
+                targetFoodUseStack = heldItem.copy();
+            }
+
+            targetWasUsingFood = true;
+            return;
+        }
+
+        if (targetWasUsingFood) {
+            int useTicks = targetFoodUseStartTick < 0 ? 0 : currentTick - targetFoodUseStartTick;
+            if (targetFoodUseStack != null && useTicks >= 24) {
+                applyFoodEaten(target, targetFoodUseStack, useTicks, currentTick);
+            }
+        }
+
+        targetWasUsingFood = false;
+        targetFoodUseStartTick = -1;
+        targetFoodUseStack = null;
     }
 
     public void addSuccessfulMeleeAttackExhaustion() {
@@ -139,6 +183,32 @@ public class TargetFoodTracker {
 
     private void addExhaustion(float exhaustion) {
         targetExhaustion = Math.min(targetExhaustion + exhaustion, MAX_EXHAUSTION);
+    }
+
+    private void applyFoodEaten(EntityPlayer target, ItemStack foodStack, int useTicks, int currentTick) {
+        if (!(foodStack.getItem() instanceof ItemFood)) return;
+
+        ItemFood food = (ItemFood) foodStack.getItem();
+        int hungerBefore = targetHunger;
+        float saturationBefore = targetSaturation;
+        int healAmount = food.getHealAmount(foodStack);
+        float saturationModifier = food.getSaturationModifier(foodStack);
+
+        targetHunger = Math.min(targetHunger + healAmount, DEFAULT_HUNGER);
+        targetSaturation = Math.min(targetSaturation + (float) healAmount * saturationModifier * 2.0F, (float) targetHunger);
+
+        writeEvent("TARGET_FOOD_EAT", detailsBuilder()
+                .field("targetEntityId", target.getEntityId())
+                .field("itemType", foodStack.getItem().getUnlocalizedName())
+                .field("displayName", foodStack.getDisplayName())
+                .field("useTicks", useTicks)
+                .field("hungerAdded", healAmount)
+                .field("saturationModifier", saturationModifier)
+                .field("targetHungerBefore", hungerBefore)
+                .field("targetHunger", targetHunger)
+                .field("targetSaturationBefore", saturationBefore)
+                .field("targetSaturation", targetSaturation)
+                .field("tick", currentTick));
     }
 
     private void rememberTargetPosition(EntityPlayer target) {
