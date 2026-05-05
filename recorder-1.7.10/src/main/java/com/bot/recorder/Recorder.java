@@ -1,7 +1,8 @@
 package com.bot.recorder;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
+import com.bot.recorder.recordWriter.JsonLineBuilder;
+import com.bot.recorder.recordWriter.RecordWriter;
+import com.bot.recorder.targetTracker.TargetHpTracker;
 import cpw.mods.fml.client.registry.ClientRegistry;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
@@ -9,67 +10,73 @@ import cpw.mods.fml.common.event.FMLInitializationEvent;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.InputEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelDuplexHandler;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelPipeline;
-import io.netty.channel.ChannelPromise;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityEnderPearl;
 import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.entity.projectile.EntityPotion;
-import net.minecraft.init.Items;
-import net.minecraft.item.ItemPotion;
 import net.minecraft.item.ItemStack;
-import net.minecraft.network.NetworkManager;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.client.C02PacketUseEntity;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
 import net.minecraft.network.play.client.C09PacketHeldItemChange;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
 import net.minecraft.potion.Potion;
-import net.minecraft.potion.PotionEffect;
-import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.MathHelper;
-import net.minecraft.util.Vec3;
 import net.minecraftforge.common.MinecraftForge;
 import org.lwjgl.input.Keyboard;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.zip.GZIPOutputStream;
 
 @Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "2.0")
 public class Recorder {
 
     private final Minecraft mc = Minecraft.getMinecraft();
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String RECORDER_VERSION = "v2";
     private static final int PEARL_COOLDOWN_TICKS = 320;
     private static final int WALL_CHECK_DISTANCE = 5;
     private static final int INVENTORY_SAMPLE_INTERVAL_TICKS = 5;
     private static final int SPATIAL_SAMPLE_INTERVAL_TICKS = 2;
     private static final int PACKET_HOOK_CHECK_INTERVAL_TICKS = 20;
-    private static final int WRITER_FLUSH_INTERVAL_FRAMES = 20;
-    private static final float TARGET_HP_DEFAULT = 20.0F;
-    private static final float SWORD_BASE_DAMAGE = 7.0F;
-    private static final float CRIT_MULTIPLIER = 1.5F;
-    private static final int SHARPNESS_LEVEL = 4;
-    private static final int ARMOR_POINTS = 20;
-    private static final int PROTECTION_LEVEL = 2;
-    private static final float INSTANT_HEALTH_II_BASE_HEAL_HP = 8.0F;
-    private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.1D;
     private static final String PACKET_HOOK_NAME = "lipsy_recorder_packet_hook";
     public static final File ROOT_DIR = new File(Minecraft.getMinecraft().mcDataDir, "ProjectLipsy/recordings");
+    private final RecordWriter recordWriter = new RecordWriter(ROOT_DIR, RECORDER_VERSION, new RecordWriter.ErrorReporter() {
+        public void report(String message) {
+            sendMessage(message);
+        }
+    });
+    private final TargetHpTracker targetHpTracker = new TargetHpTracker(mc, new TargetHpTracker.EventSink() {
+        public void writeEvent(String type, JsonLineBuilder details) {
+            Recorder.this.writeEvent(type, details);
+        }
+    });
+    private final PacketHandler packetHandler = new PacketHandler(mc, PACKET_HOOK_NAME, PACKET_HOOK_CHECK_INTERVAL_TICKS, new PacketHandler.Listener() {
+        public boolean isRecording() {
+            return Recorder.this.isRecording();
+        }
+
+        public int getRecordingTickIndex() {
+            return Recorder.this.getRecordingTickIndex();
+        }
+
+        public void onPacketHookStatus(String type, String message) {
+            Recorder.this.writeEvent(type, detailsBuilder()
+                    .field("message", message)
+                    .field("hasNetworkManager", mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null));
+        }
+
+        public void onOutgoingPacket(Packet packet, int tick) {
+            Recorder.this.handleOutgoingPacket(packet, tick);
+        }
+
+        public void onIncomingPacket(Packet packet, int tick) {
+            Recorder.this.handleIncomingPacket(packet, tick);
+        }
+    });
+    private final ItemsHandler itemsHandler = new ItemsHandler(mc);
 
     private KeyBinding recorderGuiKey;
     private RecorderGui recorderOverlay;
@@ -77,9 +84,6 @@ public class Recorder {
     // === record state ===
     private boolean recording = false;
     private String sessionId;
-    private File sessionDir;
-    private GZIPOutputStream framesWriter;
-    private FileWriter eventsWriter;
     private long startTimeMs;
     private long endTimeMs;
     private long startWorldTick;
@@ -107,13 +111,6 @@ public class Recorder {
     private int lastVelocityMotionXRaw = 0;
     private int lastVelocityMotionYRaw = 0;
     private int lastVelocityMotionZRaw = 0;
-    private NetworkManager hookedNetworkManager = null;
-    private Channel hookedChannel = null;
-    private int lastPacketHookCheckTick = -1;
-    private boolean packetHookInstalledLoggedThisSession = false;
-    private boolean packetHookFailedLoggedThisSession = false;
-    private int framesSinceFlush = 0;
-    private int eventsSinceFlush = 0;
     private int lastInventorySampleTick = -1;
     private List<String> cachedHotbar = new ArrayList<String>();
     private int cachedInventoryFood = 0;
@@ -130,7 +127,6 @@ public class Recorder {
     private Integer cachedBlockDistanceLeft = null;
     private Integer cachedBlockDistanceRight = null;
     private final JsonLineBuilder frameBuilder = new JsonLineBuilder(4096);
-    private final JsonLineBuilder eventBuilder = new JsonLineBuilder(4096);
     private final Set<Integer> seenEnemyPearlEntityIds = new HashSet<Integer>();
 
     // === combo tracking ===
@@ -138,12 +134,7 @@ public class Recorder {
     private int targetCombo = 0;
     private int lastMyHurtTime = 0;
     private int lastTargetHurtTime = 0;
-    private int trackedTargetId = -1;
-    private float estimatedTargetHp = TARGET_HP_DEFAULT;
-    private float lastEstimatedTargetDamage = 0.0F;
-    private float lastEstimatedTargetHeal = 0.0F;
-    private final Map<Integer, TrackedPotion> targetPotions = new HashMap<Integer, TrackedPotion>();
-    private final Set<Integer> processedTargetPotionEntityIds = new HashSet<Integer>();
+    private int comboTrackedTargetId = -1;
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
@@ -174,7 +165,8 @@ public class Recorder {
 
         EntityPlayer target = findClosestPlayer();
         int currentTick = recordingTickIndex;
-        updateTargetState(target, currentTick);
+        targetHpTracker.updateTargetState(target, currentTick);
+        updateComboTargetState(target);
 
         if (target != null) {
             updateCombos(target);
@@ -182,7 +174,7 @@ public class Recorder {
 
         updateInventoryCacheIfNeeded(currentTick);
         updateSpatialCacheIfNeeded(currentTick);
-        updateTargetPotionState(target, currentTick);
+        targetHpTracker.updateTargetPotionState(target, currentTick);
         boolean useItemPressed = key(mc.gameSettings.keyBindUseItem);
         boolean useItemStarted = useItemPressed && !previousUseItemPressed;
         boolean attackPressed = key(mc.gameSettings.keyBindAttack);
@@ -193,19 +185,19 @@ public class Recorder {
             lastAttackTick = currentTick;
         }
 
-        if (useItemStarted && isSplashHealthPotion(heldItem)) {
+        if (useItemStarted && itemsHandler.isSplashHealthPotion(heldItem)) {
             lastPotTick = currentTick;
         }
 
-        if (useItemStarted && isFood(heldItem)) {
+        if (useItemStarted && itemsHandler.isFood(heldItem)) {
             lastEatTick = currentTick;
         }
 
-        if (useItemStarted && isSpeedPotion(heldItem)) {
+        if (useItemStarted && itemsHandler.isSpeedPotion(heldItem)) {
             lastSpeedTick = currentTick;
         }
 
-        if (isPearl(heldItem) && useItemStarted && pearlCooldownTicksRemaining <= 0) {
+        if (itemsHandler.isPearl(heldItem) && useItemStarted && pearlCooldownTicksRemaining <= 0) {
             lastPearlTick = currentTick;
             pearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
         } else if (pearlCooldownTicksRemaining > 0) {
@@ -279,9 +271,9 @@ public class Recorder {
         frame.field("myMoveStrafing", mc.thePlayer.moveStrafing);
         frame.field("mySwingProgress", mc.thePlayer.swingProgress);
         frame.field("myUsingItem", mc.thePlayer.isUsingItem());
-        frame.field("myHeldItemType", getHeldItemType(mc.thePlayer));
-        frame.field("myHasSpeedPotion", hasPotion(mc.thePlayer, Potion.moveSpeed));
-        frame.field("mySpeedDurationTicks", getPotionDuration(mc.thePlayer, Potion.moveSpeed));
+        frame.field("myHeldItemType", itemsHandler.getHeldItemType(mc.thePlayer));
+        frame.field("myHasSpeedPotion", itemsHandler.hasPotion(mc.thePlayer, Potion.moveSpeed));
+        frame.field("mySpeedDurationTicks", itemsHandler.getPotionDuration(mc.thePlayer, Potion.moveSpeed));
         frame.field("myFoodLevel", mc.thePlayer.getFoodStats().getFoodLevel());
         frame.field("myCombo", myCombo);
         frame.field("targetCombo", targetCombo);
@@ -339,18 +331,19 @@ public class Recorder {
         frame.field("targetDeltaYaw", targetYawVel);
         frame.field("targetDeltaPitch", targetPitchVel);
         frame.field("targetHp", targetExists ? target.getHealth() : null);
-        frame.field("targetEstimatedHp", targetExists ? estimatedTargetHp : null);
-        frame.field("targetEstimatedLastDamage", targetExists ? lastEstimatedTargetDamage : null);
-        frame.field("targetEstimatedLastHeal", targetExists ? lastEstimatedTargetHeal : null);
+        frame.field("targetEstimatedHp", targetExists ? targetHpTracker.getEstimatedTargetHp() : null);
+        frame.field("targetEstimatedHpDefault", targetHpTracker.getTargetHpDefault());
+        frame.field("targetEstimatedLastDamage", targetExists ? targetHpTracker.getLastEstimatedTargetDamage() : null);
+        frame.field("targetEstimatedLastHeal", targetExists ? targetHpTracker.getLastEstimatedTargetHeal() : null);
         frame.field("targetHurtTime", targetExists ? target.hurtTime : null);
         frame.field("targetHurtResistantTime", targetExists ? target.hurtResistantTime : null);
         frame.field("targetOnGround", targetExists ? target.onGround : null);
         frame.field("targetSprinting", targetExists ? target.isSprinting() : null);
         frame.field("targetSwingProgress", targetExists ? target.swingProgress : null);
         frame.field("targetUsingItem", targetExists ? target.isUsingItem() : null);
-        frame.field("targetHeldItemType", targetExists ? getHeldItemType(target) : null);
-        frame.field("targetSpeedPotion", targetExists ? hasPotion(target, Potion.moveSpeed) : null);
-        frame.field("targetSpeedDurationTicks", targetExists ? getPotionDuration(target, Potion.moveSpeed): null);
+        frame.field("targetHeldItemType", targetExists ? itemsHandler.getHeldItemType(target) : null);
+        frame.field("targetSpeedPotion", targetExists ? itemsHandler.hasPotion(target, Potion.moveSpeed) : null);
+        frame.field("targetSpeedDurationTicks", targetExists ? itemsHandler.getPotionDuration(target, Potion.moveSpeed): null);
         frame.field("targetFood", targetExists ? target.getFoodStats().getFoodLevel() : null);
         frame.field("lineOfSight", targetExists && crosshairEntity == target);
         frame.field("yawDiffToTarget", yawDiffToTarget);
@@ -367,7 +360,7 @@ public class Recorder {
             myCombo++;
             targetCombo = 0;
             lastHitLandedTick = recordingTickIndex;
-            applyEstimatedTargetDamage(recordingTickIndex);
+            targetHpTracker.applyEstimatedTargetDamage(recordingTickIndex);
         }
         lastTargetHurtTime = target.hurtTime;
 
@@ -383,43 +376,12 @@ public class Recorder {
         lastMyHurtTime = mc.thePlayer.hurtTime;
     }
 
-    private void updateTargetState(EntityPlayer target, int currentTick) {
-        int currentTargetId = target == null ? -1 : target.getEntityId();
-        if (currentTargetId == trackedTargetId) return;
+    private void updateComboTargetState(EntityPlayer target) {
+        int targetId = target == null ? -1 : target.getEntityId();
+        if (targetId == comboTrackedTargetId) return;
 
-        int previousTargetId = trackedTargetId;
-        trackedTargetId = currentTargetId;
-        lastEstimatedTargetDamage = 0.0F;
-        lastEstimatedTargetHeal = 0.0F;
+        comboTrackedTargetId = targetId;
         lastTargetHurtTime = target == null ? 0 : target.hurtTime;
-        targetPotions.clear();
-        processedTargetPotionEntityIds.clear();
-
-        writeEvent("TARGET_CHANGED", detailsBuilder()
-                .field("previousTargetId", previousTargetId < 0 ? null : previousTargetId)
-                .field("targetEntityId", currentTargetId < 0 ? null : currentTargetId)
-                .field("tick", currentTick));
-    }
-
-    private void applyEstimatedTargetDamage(int currentTick) {
-        float damage = calculateEstimatedSwordDamage();
-        estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
-        lastEstimatedTargetDamage = damage;
-        lastEstimatedTargetHeal = 0.0F;
-        writeEvent("TARGET_ESTIMATED_DAMAGE", detailsBuilder()
-                .field("targetEntityId", trackedTargetId < 0 ? null : trackedTargetId)
-                .field("damageHp", damage)
-                .field("estimatedTargetHp", estimatedTargetHp)
-                .field("tick", currentTick));
-    }
-
-    private float calculateEstimatedSwordDamage() {
-        float preArmorDamage = SWORD_BASE_DAMAGE * CRIT_MULTIPLIER + 1.25F * SHARPNESS_LEVEL;
-        float armorMultiplier = (25.0F - ARMOR_POINTS) / 25.0F;
-        float epf = Math.min(PROTECTION_LEVEL * 4.0F, 20.0F);
-        float protectionMultiplier = (25.0F - epf) / 25.0F;
-
-        return preArmorDamage * armorMultiplier * protectionMultiplier;
     }
 
     private EntityPlayer findClosestPlayer() {
@@ -468,11 +430,11 @@ public class Recorder {
         }
 
         lastInventorySampleTick = currentTick;
-        cachedHotbar = getHotbarSnapshot();
-        cachedInventoryFood = countFoodItems();
-        cachedInventorySpeedPotions = countSpeedPotions();
-        cachedInventoryHealthPotions = countSplashHealthPotions();
-        cachedInventoryPearls = countPearls();
+        cachedHotbar = itemsHandler.getHotbarSnapshot();
+        cachedInventoryFood = itemsHandler.countFoodItems();
+        cachedInventorySpeedPotions = itemsHandler.countSpeedPotions();
+        cachedInventoryHealthPotions = itemsHandler.countSplashHealthPotions();
+        cachedInventoryPearls = itemsHandler.countPearls();
     }
 
     private void updateSpatialCacheIfNeeded(int currentTick) {
@@ -542,253 +504,13 @@ public class Recorder {
         return true;
     }
 
-    private void updateTargetPotionState(EntityPlayer target, int currentTick) {
-        if (target == null || mc.theWorld == null) {
-            targetPotions.clear();
-            return;
-        }
-
-        Set<Integer> visiblePotionIds = new HashSet<Integer>();
-
-        for (Object entityObject : mc.theWorld.loadedEntityList) {
-            if (!(entityObject instanceof EntityPotion)) continue;
-
-            EntityPotion potion = (EntityPotion) entityObject;
-            int potionId = potion.getEntityId();
-            if (processedTargetPotionEntityIds.contains(potionId)) continue;
-            if (!isTargetHealingSplashPotion(potion, target)) continue;
-
-            visiblePotionIds.add(potionId);
-            TrackedPotion tracked = targetPotions.get(potionId);
-            if (tracked == null) {
-                tracked = new TrackedPotion(potionId, currentTick);
-                targetPotions.put(potionId, tracked);
-            }
-            tracked.update(potion.posX, potion.posY, potion.posZ, potion.ticksExisted);
-        }
-
-        Iterator<Map.Entry<Integer, TrackedPotion>> iterator = targetPotions.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<Integer, TrackedPotion> entry = iterator.next();
-            if (visiblePotionIds.contains(entry.getKey())) continue;
-
-            applyEstimatedTargetPotionHeal(target, entry.getValue(), currentTick);
-            processedTargetPotionEntityIds.add(entry.getKey());
-            iterator.remove();
-        }
-    }
-
-    private boolean isTargetHealingSplashPotion(EntityPotion potion, EntityPlayer target) {
-        if (!isInstantHealthIISplashPotion(potion)) return false;
-
-        Entity thrower = potion.getThrower();
-        if (thrower == mc.thePlayer) return false;
-        if (thrower == target) return true;
-        if (thrower != null) return false;
-
-        return target.getDistanceToEntity(potion) <= 4.0F;
-    }
-
-    private boolean isInstantHealthIISplashPotion(EntityPotion potion) {
-        int potionDamage = potion.getPotionDamage();
-        if (!ItemPotion.isSplash(potionDamage)) return false;
-
-        List effects = Items.potionitem.getEffects(potionDamage);
-        if (effects == null) return false;
-
-        for (Object effectObject : effects) {
-            if (!(effectObject instanceof PotionEffect)) continue;
-
-            PotionEffect effect = (PotionEffect) effectObject;
-            if (effect.getPotionID() == Potion.heal.id && effect.getAmplifier() >= 1) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private void applyEstimatedTargetPotionHeal(EntityPlayer target, TrackedPotion potion, int currentTick) {
-        double distanceSq = target.getDistanceSq(potion.lastX, potion.lastY, potion.lastZ);
-        float effectiveness = 0.0F;
-        boolean directHitEstimated = isPotionDirectHit(target, potion);
-
-        if (directHitEstimated) {
-            effectiveness = 1.0F;
-        } else if (distanceSq < 16.0D) {
-            effectiveness = clampFloat(1.0F - ((float) Math.sqrt(distanceSq) / 4.0F), 0.0F, 1.0F);
-        }
-
-        float healHp = (float) Math.floor(INSTANT_HEALTH_II_BASE_HEAL_HP * effectiveness + 0.5F);
-        if (healHp <= 0.0F) return;
-
-        estimatedTargetHp = clampFloat(estimatedTargetHp + healHp, 0.0F, TARGET_HP_DEFAULT);
-        lastEstimatedTargetHeal = healHp;
-        lastEstimatedTargetDamage = 0.0F;
-        writeEvent("TARGET_ESTIMATED_HEAL", detailsBuilder()
-                .field("targetEntityId", target.getEntityId())
-                .field("potionEntityId", potion.entityId)
-                .field("healHp", healHp)
-                .field("effectiveness", effectiveness)
-                .field("directHitEstimated", directHitEstimated)
-                .field("impactDistanceSq", distanceSq)
-                .field("segmentStartX", potion.previousX)
-                .field("segmentStartY", potion.previousY)
-                .field("segmentStartZ", potion.previousZ)
-                .field("segmentEndX", potion.lastX)
-                .field("segmentEndY", potion.lastY)
-                .field("segmentEndZ", potion.lastZ)
-                .field("estimatedTargetHp", estimatedTargetHp)
-                .field("tick", currentTick));
-    }
-
-    private boolean isPotionDirectHit(EntityPlayer target, TrackedPotion potion) {
-        if (target == null || target.boundingBox == null) return false;
-
-        AxisAlignedBB hitBox = target.boundingBox.expand(
-                POTION_DIRECT_HIT_BOX_EXPAND,
-                POTION_DIRECT_HIT_BOX_EXPAND,
-                POTION_DIRECT_HIT_BOX_EXPAND);
-        Vec3 segmentStart = Vec3.createVectorHelper(potion.previousX, potion.previousY, potion.previousZ);
-        Vec3 segmentEnd = Vec3.createVectorHelper(potion.lastX, potion.lastY, potion.lastZ);
-
-        return hitBox.isVecInside(segmentStart)
-                || hitBox.isVecInside(segmentEnd)
-                || hitBox.calculateIntercept(segmentStart, segmentEnd) != null;
-    }
-
-    private float clampFloat(float value, float min, float max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
     private void installPacketHook() {
-        int hookCheckTick = mc.thePlayer == null ? (int) (System.currentTimeMillis() / 50L) : mc.thePlayer.ticksExisted;
-        if (hookedNetworkManager != null && lastPacketHookCheckTick >= 0 && hookCheckTick - lastPacketHookCheckTick < PACKET_HOOK_CHECK_INTERVAL_TICKS) {
-            return;
-        }
-        lastPacketHookCheckTick = hookCheckTick;
-
-        NetHandlerPlayClient netHandler = mc.getNetHandler();
-        if (netHandler == null) {
-            hookedNetworkManager = null;
-            hookedChannel = null;
-            return;
-        }
-
-        NetworkManager networkManager = netHandler.getNetworkManager();
-        if (networkManager == null) return;
-
-        Channel channel = getNetworkChannel(networkManager);
-        if (channel == null) {
-            hookedNetworkManager = null;
-            hookedChannel = null;
-            logPacketHookStatus("PACKET_HOOK_FAILED", "NetworkManager channel field not found");
-            return;
-        }
-
-        ChannelPipeline pipeline = channel.pipeline();
-        if (pipeline.get(PACKET_HOOK_NAME) != null) {
-            hookedNetworkManager = networkManager;
-            hookedChannel = channel;
-            logPacketHookStatus("PACKET_HOOK_INSTALLED", "existing handler");
-            return;
-        }
-
-        if (networkManager == hookedNetworkManager) {
-            return;
-        }
-
-        ChannelDuplexHandler handler = new ChannelDuplexHandler() {
-            @Override
-            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-                if (msg instanceof Packet) {
-                    handleIncomingPacket((Packet) msg);
-                }
-
-                super.channelRead(ctx, msg);
-            }
-
-            @Override
-            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-                if (msg instanceof Packet) {
-                    handleOutgoingPacket((Packet) msg);
-                }
-
-                super.write(ctx, msg, promise);
-            }
-        };
-
-        try {
-            if (pipeline.get("packet_handler") != null) {
-                pipeline.addBefore("packet_handler", PACKET_HOOK_NAME, handler);
-            } else {
-                pipeline.addLast(PACKET_HOOK_NAME, handler);
-            }
-            hookedNetworkManager = networkManager;
-            hookedChannel = channel;
-            logPacketHookStatus("PACKET_HOOK_INSTALLED", "inserted handler");
-        } catch (IllegalArgumentException ex) {
-            if (pipeline.get(PACKET_HOOK_NAME) != null) {
-                hookedNetworkManager = networkManager;
-                hookedChannel = channel;
-                logPacketHookStatus("PACKET_HOOK_INSTALLED", "handler already present after insert race");
-            } else {
-                hookedNetworkManager = null;
-                hookedChannel = null;
-                logPacketHookStatus("PACKET_HOOK_FAILED", ex.getClass().getSimpleName() + ": " + ex.getMessage());
-            }
-        }
+        packetHandler.install();
     }
 
-    private Channel getNetworkChannel(NetworkManager networkManager) {
-        String[] channelFieldNames = {"channel", "field_150746_k"};
-        for (String fieldName : channelFieldNames) {
-            try {
-                Field channelField = NetworkManager.class.getDeclaredField(fieldName);
-                channelField.setAccessible(true);
-                Object value = channelField.get(networkManager);
-                if (value instanceof Channel) {
-                    return (Channel) value;
-                }
-            } catch (Exception ignored) {
-            }
-        }
-
-        for (Field field : NetworkManager.class.getDeclaredFields()) {
-            if (!Channel.class.isAssignableFrom(field.getType())) continue;
-
-            try {
-                field.setAccessible(true);
-                Object value = field.get(networkManager);
-                if (value instanceof Channel) {
-                    return (Channel) value;
-                }
-            } catch (Exception ignored) {
-            }
-        }
-
-        return null;
-    }
-
-    private void logPacketHookStatus(String type, String message) {
-        if (!recording) return;
-        if ("PACKET_HOOK_INSTALLED".equals(type)) {
-            if (packetHookInstalledLoggedThisSession) return;
-            packetHookInstalledLoggedThisSession = true;
-        } else if ("PACKET_HOOK_FAILED".equals(type)) {
-            if (packetHookFailedLoggedThisSession) return;
-            packetHookFailedLoggedThisSession = true;
-        }
-
-        writeEvent(type, detailsBuilder()
-                .field("message", message)
-                .field("hasNetworkManager", mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null));
-    }
-
-    private void handleOutgoingPacket(Packet packet) {
+    private void handleOutgoingPacket(Packet packet, int tick) {
         if (!recording) return;
 
-        int tick = recordingTickIndex;
         if (packet instanceof C02PacketUseEntity) {
             handleUseEntityPacket((C02PacketUseEntity) packet, tick);
         } else if (packet instanceof C08PacketPlayerBlockPlacement) {
@@ -820,29 +542,29 @@ public class Recorder {
 
         lastUseItemPacketTick = tick;
         writeEvent("USE_ITEM_PACKET_SENT", detailsBuilder()
-                .field("itemType", getItemType(stack))
-                .field("displayName", getDisplayName(stack))
+                .field("itemType", itemsHandler.getItemType(stack))
+                .field("displayName", itemsHandler.getDisplayName(stack))
                 .field("placedBlockX", packet.getPlacedBlockX())
                 .field("placedBlockY", packet.getPlacedBlockY())
                 .field("placedBlockZ", packet.getPlacedBlockZ())
                 .field("placedBlockDirection", packet.getPlacedBlockDirection()));
 
-        if (isSplashHealthPotion(stack)) {
+        if (itemsHandler.isSplashHealthPotion(stack)) {
             lastPotTick = tick;
             writeEvent("POTION_USE", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
         }
 
-        if (isFood(stack)) {
+        if (itemsHandler.isFood(stack)) {
             lastEatTick = tick;
             writeEvent("FOOD_EAT", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
         }
 
-        if (isSpeedPotion(stack)) {
+        if (itemsHandler.isSpeedPotion(stack)) {
             lastSpeedTick = tick;
             writeEvent("SPEED_USE", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
         }
 
-        if (isPearl(stack)) {
+        if (itemsHandler.isPearl(stack)) {
             lastPearlTick = tick;
             pearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
             writeEvent("PEARL_THROW", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
@@ -854,15 +576,15 @@ public class Recorder {
                 .field("slot", packet.getSlotId()));
     }
 
-    private void handleIncomingPacket(Packet packet) {
+    private void handleIncomingPacket(Packet packet, int tick) {
         if (!recording) return;
 
         if (packet instanceof S12PacketEntityVelocity) {
-            handleEntityVelocityPacket((S12PacketEntityVelocity) packet);
+            handleEntityVelocityPacket((S12PacketEntityVelocity) packet, tick);
         }
     }
 
-    private void handleEntityVelocityPacket(S12PacketEntityVelocity packet) {
+    private void handleEntityVelocityPacket(S12PacketEntityVelocity packet, int tick) {
         int entityId = packet.func_149412_c();
         boolean isSelf = mc.thePlayer != null && entityId == mc.thePlayer.getEntityId();
         if (!isSelf) return;
@@ -870,7 +592,6 @@ public class Recorder {
         int motionXRaw = packet.func_149411_d();
         int motionYRaw = packet.func_149410_e();
         int motionZRaw = packet.func_149409_f();
-        int tick = recordingTickIndex;
         if (lastVelocityEventTick == tick
                 && lastVelocityEntityId == entityId
                 && lastVelocityMotionXRaw == motionXRaw
@@ -894,129 +615,6 @@ public class Recorder {
                 .field("motionX", motionXRaw / 8000.0D)
                 .field("motionY", motionYRaw / 8000.0D)
                 .field("motionZ", motionZRaw / 8000.0D));
-    }
-
-    private String getHeldItemType(EntityPlayer player) {
-        ItemStack stack = player.getHeldItem();
-        if (stack == null || stack.getItem() == null) return null;
-
-        return stack.getItem().getUnlocalizedName();
-    }
-
-    private Integer getPotionDuration(EntityPlayer player, Potion potion) {
-        if (!player.isPotionActive(potion)) return null;
-
-        return player.getActivePotionEffect(potion).getDuration();
-    }
-
-    private boolean hasPotion(EntityPlayer player, Potion potion) {
-        return player.isPotionActive(potion);
-    }
-
-    private List<String> getHotbarSnapshot() {
-        List<String> hotbar = new ArrayList<String>();
-
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
-            hotbar.add(getItemType(stack));
-        }
-
-        return hotbar;
-    }
-
-    private int countFoodItems() {
-        return countInventoryItems(new ItemMatcher() {
-            public boolean matches(ItemStack stack) {
-                return isFood(stack);
-            }
-        });
-    }
-
-    private int countSpeedPotions() {
-        return countInventoryItems(new ItemMatcher() {
-            public boolean matches(ItemStack stack) {
-                return isSpeedPotion(stack);
-            }
-        });
-    }
-
-    private int countSplashHealthPotions() {
-        return countInventoryItems(new ItemMatcher() {
-            public boolean matches(ItemStack stack) {
-                return isSplashHealthPotion(stack);
-            }
-        });
-    }
-
-    private int countPearls() {
-        return countInventoryItems(new ItemMatcher() {
-            public boolean matches(ItemStack stack) {
-                return isPearl(stack);
-            }
-        });
-    }
-
-    private int countInventoryItems(ItemMatcher matcher) {
-        int count = 0;
-
-        for (int i = 0; i < 36; i++) {
-            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
-            if (stack != null && matcher.matches(stack)) {
-                count += stack.stackSize;
-            }
-        }
-
-        return count;
-    }
-
-    private String getItemType(ItemStack stack) {
-        if (stack == null || stack.getItem() == null) return null;
-
-        return stack.getItem().getUnlocalizedName();
-    }
-
-    private String getDisplayNameLower(ItemStack stack) {
-        return stack == null ? "" : stack.getDisplayName().toLowerCase(Locale.US);
-    }
-
-    private String getDisplayName(ItemStack stack) {
-        return stack == null ? null : stack.getDisplayName();
-    }
-
-    private String getItemTypeLower(ItemStack stack) {
-        String type = getItemType(stack);
-
-        return type == null ? "" : type.toLowerCase(Locale.US);
-    }
-
-    private boolean isFood(ItemStack stack) {
-        String type = getItemTypeLower(stack);
-
-        return type.contains("beefcooked") || type.contains("carrotgolden");
-    }
-
-    private boolean isSpeedPotion(ItemStack stack) {
-        String name = getDisplayNameLower(stack);
-        String type = getItemTypeLower(stack);
-
-        return name.contains("swiftness") && type.contains("potion");
-    }
-
-    private boolean isSplashHealthPotion(ItemStack stack) {
-        String name = getDisplayNameLower(stack);
-        String type = getItemTypeLower(stack);
-
-        return type.contains("potion") && name.contains("splash") && (name.contains("instant health") || name.contains("healing"));
-    }
-
-    private boolean isPearl(ItemStack stack) {
-        return getItemTypeLower(stack).contains("enderpearl");
-    }
-
-    private boolean wallInDirection(float yawOffset) {
-        Integer distance = blockDistanceInDirection(yawOffset);
-
-        return distance != null && distance <= WALL_CHECK_DISTANCE;
     }
 
     private Integer blockDistanceInDirection(float yawOffset) {
@@ -1072,234 +670,22 @@ public class Recorder {
         return right - left;
     }
 
-    private interface ItemMatcher {
-        boolean matches(ItemStack stack);
-    }
-
     private void writeFrame(JsonLineBuilder frame) {
-        if (framesWriter == null) return;
-
-        try {
-            framesWriter.write(frame.finish().getBytes(StandardCharsets.UTF_8));
-            framesWriter.write('\n');
-            framesSinceFlush++;
-            if (framesSinceFlush >= WRITER_FLUSH_INTERVAL_FRAMES) {
-                framesWriter.flush();
-                framesSinceFlush = 0;
-            }
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            sendMessage("Failed to write frame: " + ex.getMessage());
-        }
-    }
-
-    private void writeEvent(JsonLineBuilder event) {
-        if (eventsWriter == null) return;
-
-        try {
-            eventsWriter.write(event.finish());
-            eventsWriter.write("\n");
-            eventsSinceFlush++;
-            if (eventsSinceFlush >= WRITER_FLUSH_INTERVAL_FRAMES) {
-                eventsWriter.flush();
-                eventsSinceFlush = 0;
-            }
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            sendMessage("Failed to write event: " + ex.getMessage());
-        }
+        recordWriter.writeFrame(frame);
     }
 
     private void writeEvent(String type, JsonLineBuilder details) {
-        if (eventsWriter == null) return;
-
-        JsonLineBuilder event = eventBuilder.reset();
-        event.field("type", type);
-        event.field("recording_tick_index", recordingTickIndex);
-        event.field("world_tick", getWorldTick());
-        event.field("time_ms", System.currentTimeMillis());
-        event.field("details", new RawJson(details.finish()));
-        writeEvent(event);
+        recordWriter.writeEvent(type, details, recordingTickIndex, getWorldTick());
     }
 
     private JsonLineBuilder detailsBuilder() {
-        return new JsonLineBuilder(512);
+        return recordWriter.detailsBuilder();
     }
 
     private JsonLineBuilder itemDetails(ItemStack stack) {
         return detailsBuilder()
-                .field("itemType", getItemType(stack))
-                .field("displayName", getDisplayName(stack));
-    }
-
-    private void appendJsonArray(StringBuilder out, List<?> values) {
-        out.append('[');
-
-        for (int i = 0; i < values.size(); i++) {
-            if (i > 0) out.append(',');
-            appendJsonValue(out, values.get(i));
-        }
-
-        out.append(']');
-    }
-
-    private void appendJsonValue(StringBuilder out, Object value) {
-        if (value == null) {
-            out.append("null");
-        } else if (value instanceof String) {
-            appendJsonString(out, (String) value);
-        } else if (value instanceof Number) {
-            appendJsonNumber(out, (Number) value);
-        } else if (value instanceof Boolean) {
-            out.append(((Boolean) value).booleanValue() ? "true" : "false");
-        } else if (value instanceof List) {
-            appendJsonArray(out, (List<?>) value);
-        } else if (value instanceof RawJson) {
-            out.append(((RawJson) value).json);
-        } else {
-            appendJsonString(out, value.toString());
-        }
-    }
-
-    private void appendJsonNumber(StringBuilder out, Number number) {
-        if (number instanceof Float) {
-            float value = ((Float) number).floatValue();
-            if (Float.isNaN(value) || Float.isInfinite(value)) {
-                out.append("null");
-                return;
-            }
-        } else if (number instanceof Double) {
-            double value = ((Double) number).doubleValue();
-            if (Double.isNaN(value) || Double.isInfinite(value)) {
-                out.append("null");
-                return;
-            }
-        }
-
-        out.append(number.toString());
-    }
-
-    private void appendJsonString(StringBuilder out, String value) {
-        out.append('"');
-
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            switch (c) {
-                case '"':
-                    out.append("\\\"");
-                    break;
-                case '\\':
-                    out.append("\\\\");
-                    break;
-                case '\b':
-                    out.append("\\b");
-                    break;
-                case '\f':
-                    out.append("\\f");
-                    break;
-                case '\n':
-                    out.append("\\n");
-                    break;
-                case '\r':
-                    out.append("\\r");
-                    break;
-                case '\t':
-                    out.append("\\t");
-                    break;
-                default:
-                    if (c < 0x20) {
-                        out.append("\\u");
-                        String hex = Integer.toHexString(c);
-                        for (int j = hex.length(); j < 4; j++) out.append('0');
-                        out.append(hex);
-                    } else {
-                        out.append(c);
-                    }
-                    break;
-            }
-        }
-
-        out.append('"');
-    }
-
-    private class JsonLineBuilder {
-        private final StringBuilder out;
-        private boolean first = true;
-        private boolean finished = false;
-
-        JsonLineBuilder(int initialCapacity) {
-            this.out = new StringBuilder(initialCapacity);
-            this.out.append('{');
-        }
-
-        JsonLineBuilder reset() {
-            out.setLength(0);
-            out.append('{');
-            first = true;
-            finished = false;
-            return this;
-        }
-
-        JsonLineBuilder field(String name, Object value) {
-            if (!first) out.append(',');
-            first = false;
-            appendJsonString(out, name);
-            out.append(':');
-            appendJsonValue(out, value);
-            return this;
-        }
-
-        String finish() {
-            if (!finished) {
-                out.append('}');
-                finished = true;
-            }
-
-            return out.toString();
-        }
-    }
-
-    private static class RawJson {
-        private final String json;
-
-        RawJson(String json) {
-            this.json = json;
-        }
-    }
-
-    private void writeSessionMeta() {
-        if (sessionDir == null) return;
-
-        Map<String, Object> meta = new LinkedHashMap<>();
-        meta.put("sessionId", sessionId);
-        meta.put("recorderVersion", RECORDER_VERSION);
-        meta.put("startTimeMs", startTimeMs);
-        meta.put("endTimeMs", endTimeMs);
-        meta.put("startWorldTick", startWorldTick);
-        meta.put("serverIp", serverIp);
-
-        try {
-            File out = new File(sessionDir, "session_meta.json");
-            FileWriter w = new FileWriter(out);
-            GSON.toJson(meta, w);
-            w.close();
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            sendMessage("Failed to write session_meta.json: " + ex.getMessage());
-        }
-    }
-
-    private String createSessionId(long timeMs) {
-        String base = "session_" + timeMs;
-        String candidate = base;
-        int suffix = 1;
-
-        while (new File(ROOT_DIR, candidate).exists()) {
-            candidate = base + "_" + suffix;
-            suffix++;
-        }
-
-        return candidate;
+                .field("itemType", itemsHandler.getItemType(stack))
+                .field("displayName", itemsHandler.getDisplayName(stack));
     }
 
     private long getWorldTick() {
@@ -1314,24 +700,20 @@ public class Recorder {
         return "singleplayer";
     }
 
-    private void sendMessage(String message) {
-        mc.thePlayer.addChatMessage(new ChatComponentText("\u00A77[\u00A7bLipsy\u00A77] \u00A7f" + message));
+    public void sendMessage(String message) {
+        if (mc.thePlayer != null) {
+            mc.thePlayer.addChatMessage(new ChatComponentText("\u00A77[\u00A7bLipsy\u00A77] \u00A7f" + message));
+        }
     }
 
     public void startRecording() {
         if (recording) return;
 
-        if (!ROOT_DIR.exists()) ROOT_DIR.mkdirs();
-
         startTimeMs = System.currentTimeMillis();
         endTimeMs = 0;
         startWorldTick = getWorldTick();
         serverIp = getServerIp();
-        sessionId = createSessionId(startTimeMs);
-        sessionDir = new File(ROOT_DIR, sessionId);
         recordingTickIndex = 0;
-        framesSinceFlush = 0;
-        eventsSinceFlush = 0;
         lastInventorySampleTick = -1;
         cachedHotbar = new ArrayList<String>();
         cachedInventoryFood = 0;
@@ -1370,29 +752,17 @@ public class Recorder {
         lastVelocityMotionXRaw = 0;
         lastVelocityMotionYRaw = 0;
         lastVelocityMotionZRaw = 0;
-        packetHookInstalledLoggedThisSession = false;
-        packetHookFailedLoggedThisSession = false;
-        lastPacketHookCheckTick = -1;
+        packetHandler.resetSession();
         myCombo = 0;
         targetCombo = 0;
         lastMyHurtTime = 0;
         lastTargetHurtTime = 0;
-        trackedTargetId = -1;
-        estimatedTargetHp = TARGET_HP_DEFAULT;
-        lastEstimatedTargetDamage = 0.0F;
-        lastEstimatedTargetHeal = 0.0F;
-        targetPotions.clear();
-        processedTargetPotionEntityIds.clear();
-
-        if (!sessionDir.exists() && !sessionDir.mkdirs()) {
-            sendMessage("Failed to create session folder.");
-            return;
-        }
+        comboTrackedTargetId = -1;
+        targetHpTracker.reset();
 
         try {
-            framesWriter = new GZIPOutputStream(new FileOutputStream(new File(sessionDir, "frames.jsonl.gz")));
-            eventsWriter = new FileWriter(new File(sessionDir, "events.jsonl"));
-            writeSessionMeta();
+            recordWriter.startSession(startTimeMs, startWorldTick, serverIp);
+            sessionId = recordWriter.getSessionId();
             recording = true;
             writeEvent("RECORD_START", detailsBuilder()
                     .field("sessionId", sessionId)
@@ -1403,8 +773,6 @@ public class Recorder {
         } catch (IOException ex) {
             ex.printStackTrace();
             sendMessage("Failed to start recording: " + ex.getMessage());
-            closeFramesWriter();
-            closeEventsWriter();
         }
     }
 
@@ -1417,38 +785,8 @@ public class Recorder {
                 .field("sessionId", sessionId)
                 .field("endTimeMs", endTimeMs)
                 .field("endWorldTick", getWorldTick()));
-        writeSessionMeta();
-        closeFramesWriter();
-        closeEventsWriter();
+        recordWriter.finishSession(endTimeMs);
         sendMessage("Recording stopped: " + sessionId);
-    }
-
-    private void closeFramesWriter() {
-        if (framesWriter == null) return;
-
-        try {
-            framesWriter.flush();
-            framesWriter.close();
-        } catch (IOException ex) {
-            ex.printStackTrace();
-        }
-
-        framesSinceFlush = 0;
-        framesWriter = null;
-    }
-
-    private void closeEventsWriter() {
-        if (eventsWriter == null) return;
-
-        try {
-            eventsWriter.flush();
-            eventsWriter.close();
-        } catch (IOException ex) {
-            ex.printStackTrace();
-        }
-
-        eventsSinceFlush = 0;
-        eventsWriter = null;
     }
 
 
@@ -1459,41 +797,5 @@ public class Recorder {
     public int getRecordingTickIndex() {return recordingTickIndex;}
 
     public long getCurrentTimeMs() {return System.currentTimeMillis();}
-
-    private static class TrackedPotion {
-        private final int entityId;
-        private final int firstSeenTick;
-        private double previousX;
-        private double previousY;
-        private double previousZ;
-        private double lastX;
-        private double lastY;
-        private double lastZ;
-        private int lastTicksExisted;
-        private boolean hasPosition;
-
-        private TrackedPotion(int entityId, int firstSeenTick) {
-            this.entityId = entityId;
-            this.firstSeenTick = firstSeenTick;
-        }
-
-        private void update(double x, double y, double z, int ticksExisted) {
-            if (hasPosition) {
-                this.previousX = this.lastX;
-                this.previousY = this.lastY;
-                this.previousZ = this.lastZ;
-            } else {
-                this.previousX = x;
-                this.previousY = y;
-                this.previousZ = z;
-                this.hasPosition = true;
-            }
-
-            this.lastX = x;
-            this.lastY = y;
-            this.lastZ = z;
-            this.lastTicksExisted = ticksExisted;
-        }
-    }
 
 }
