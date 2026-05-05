@@ -19,6 +19,7 @@ import net.minecraft.client.network.NetHandlerPlayClient;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.item.EntityEnderPearl;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.NetworkManager;
@@ -75,6 +76,7 @@ public class Recorder {
     private final Map<Integer, Float> previousTargetYawById = new HashMap<Integer, Float>();
     private final Map<Integer, Float> previousTargetPitchById = new HashMap<Integer, Float>();
     private int pearlCooldownTicksRemaining = 0;
+    private int enemyPearlCooldownTicksRemaining = 0;
     private boolean previousUseItemPressed = false;
     private boolean previousAttackPressed = false;
     private int lastAttackTick = -1;
@@ -83,6 +85,7 @@ public class Recorder {
     private int lastDamageTakenTick = -1;
     private int lastHitLandedTick = -1;
     private int lastPearlTick = -1;
+    private int lastEnemyPearlTick = -1;
     private int lastPotTick = -1;
     private int lastUseItemPacketTick = -1;
     private int lastVelocityEventTick = -1;
@@ -114,6 +117,7 @@ public class Recorder {
     private Integer cachedBlockDistanceRight = null;
     private final JsonLineBuilder frameBuilder = new JsonLineBuilder(4096);
     private final JsonLineBuilder eventBuilder = new JsonLineBuilder(4096);
+    private final Set<Integer> seenEnemyPearlEntityIds = new HashSet<Integer>();
 
     // === combo tracking ===
     private int myCombo = 0;
@@ -185,6 +189,8 @@ public class Recorder {
         } else if (pearlCooldownTicksRemaining > 0) {
             pearlCooldownTicksRemaining--;
         }
+
+        boolean enemyPearl = updateEnemyPearlState(target, currentTick);
         previousUseItemPressed = useItemPressed;
         previousAttackPressed = attackPressed;
 
@@ -259,6 +265,9 @@ public class Recorder {
         frame.field("targetCombo", targetCombo);
         frame.field("pearlCooldownTicksRemaining", pearlCooldownTicksRemaining);
         frame.field("pearlCooldownSecondsRemaining", pearlCooldownTicksRemaining / 20.0F);
+        frame.field("enemyPearl", enemyPearl);
+        frame.field("enemyPearlCooldownTicksRemaining", enemyPearlCooldownTicksRemaining);
+        frame.field("enemyPearlCooldownSecondsRemaining", enemyPearlCooldownTicksRemaining / 20.0F);
         frame.field("selectedSlot", mc.thePlayer.inventory.currentItem);
         frame.field("hotbar", cachedHotbar);
         frame.field("inventoryFood", cachedInventoryFood);
@@ -276,6 +285,7 @@ public class Recorder {
         frame.field("ticksSinceLastDamageTaken", ticksSince(lastDamageTakenTick, currentTick));
         frame.field("ticksSinceLastHitLanded", ticksSince(lastHitLandedTick, currentTick));
         frame.field("ticksSinceLastPearl", ticksSince(lastPearlTick, currentTick));
+        frame.field("ticksSinceLastEnemyPearl", ticksSince(lastEnemyPearlTick, currentTick));
         frame.field("ticksSinceLastUseItemPacket", ticksSince(lastUseItemPacketTick, currentTick));
 //        frame.field("lastAttackTick", nullableTick(lastAttackTick));
 //        frame.field("lastEatTick", nullableTick(lastEatTick));
@@ -414,6 +424,57 @@ public class Recorder {
         cachedWallBehind = cachedBlockDistanceBack != null && cachedBlockDistanceBack <= WALL_CHECK_DISTANCE;
         cachedWallLeft = cachedBlockDistanceLeft != null && cachedBlockDistanceLeft <= WALL_CHECK_DISTANCE;
         cachedWallRight = cachedBlockDistanceRight != null && cachedBlockDistanceRight <= WALL_CHECK_DISTANCE;
+    }
+
+    private boolean updateEnemyPearlState(EntityPlayer target, int currentTick) {
+        if (enemyPearlCooldownTicksRemaining > 0) {
+            enemyPearlCooldownTicksRemaining--;
+        }
+
+        if (target == null || mc.theWorld == null) {
+            return false;
+        }
+
+        for (Object entityObject : mc.theWorld.loadedEntityList) {
+            if (!(entityObject instanceof EntityEnderPearl)) continue;
+
+            EntityEnderPearl pearl = (EntityEnderPearl) entityObject;
+            int pearlId = pearl.getEntityId();
+            if (seenEnemyPearlEntityIds.contains(pearlId)) continue;
+
+            if (!isEnemyPearlFromTarget(pearl, target)) continue;
+
+            seenEnemyPearlEntityIds.add(pearlId);
+            lastEnemyPearlTick = currentTick;
+            enemyPearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
+            writeEvent("ENEMY_PEARL_THROW", detailsBuilder()
+                    .field("targetEntityId", target.getEntityId())
+                    .field("pearlEntityId", pearlId)
+                    .field("pearlTicksExisted", pearl.ticksExisted)
+                    .field("distanceToTarget", (double) target.getDistanceToEntity(pearl)));
+            return true;
+        }
+
+        return false;
+    }
+
+    private boolean isEnemyPearlFromTarget(EntityEnderPearl pearl, EntityPlayer target) {
+        Entity thrower = pearl.getThrower();
+        if (thrower == mc.thePlayer) return false;
+        if (thrower == target) return true;
+        if (thrower != null) return false;
+
+        if (pearl.ticksExisted > 5) return false;
+
+        double targetDistance = target.getDistanceToEntity(pearl);
+        if (targetDistance > 4.0D) return false;
+
+        if (mc.thePlayer != null) {
+            double selfDistance = mc.thePlayer.getDistanceToEntity(pearl);
+            if (selfDistance + 0.5D < targetDistance) return false;
+        }
+
+        return true;
     }
 
     private void installPacketHook() {
@@ -1113,6 +1174,8 @@ public class Recorder {
         previousTargetYawById.clear();
         previousTargetPitchById.clear();
         pearlCooldownTicksRemaining = 0;
+        enemyPearlCooldownTicksRemaining = 0;
+        seenEnemyPearlEntityIds.clear();
         previousUseItemPressed = false;
         previousAttackPressed = false;
         lastAttackTick = -1;
@@ -1121,6 +1184,7 @@ public class Recorder {
         lastDamageTakenTick = -1;
         lastHitLandedTick = -1;
         lastPearlTick = -1;
+        lastEnemyPearlTick = -1;
         lastPotTick = -1;
         lastUseItemPacketTick = -1;
         lastVelocityEventTick = -1;
