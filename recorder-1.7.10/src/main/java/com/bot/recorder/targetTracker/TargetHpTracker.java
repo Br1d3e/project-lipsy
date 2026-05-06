@@ -36,6 +36,8 @@ public class TargetHpTracker {
     private static final float PEARL_BASE_DAMAGE_HP = 5.0F;
     private static final float INSTANT_HEALTH_II_BASE_HEAL_HP = 8.0F;
     private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.3D;
+    private static final double POTION_DIRECT_HIT_EPSILON = 1.44D;
+    private static final int TARGET_HITBOX_HISTORY_TICKS = 8;
     private static final int NATURAL_REGEN_INTERVAL_TICKS = 80;
     private static final float NATURAL_REGEN_HEAL_HP = 1.0F;
     private int trackedTargetId = -1;
@@ -48,6 +50,7 @@ public class TargetHpTracker {
     private int targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
     private final Map<Integer, TrackedPotion> targetPotions = new HashMap<Integer, TrackedPotion>();
     private final Set<Integer> processedTargetPotionEntityIds = new HashSet<Integer>();
+    private final Deque<TargetHitboxSnapshot> targetHitboxHistory = new ArrayDeque<TargetHitboxSnapshot>();
 
     public TargetHpTracker(Minecraft mc, ItemsHandler itemsHandler, EventSink eventSink) {
         this.mc = mc;
@@ -66,12 +69,14 @@ public class TargetHpTracker {
         targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
+        targetHitboxHistory.clear();
     }
 
     public void updateTargetState(EntityPlayer target, int currentTick) {
         int currentTargetId = target == null ? -1 : target.getEntityId();
         if (currentTargetId == trackedTargetId) {
             updateTargetArmorState(target);
+            rememberTargetHitbox(target, currentTick);
             return;
         }
 
@@ -83,7 +88,9 @@ public class TargetHpTracker {
         naturalRegenTimer = 0;
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
+        targetHitboxHistory.clear();
         updateTargetArmorState(target);
+        rememberTargetHitbox(target, currentTick);
 
         writeEvent("TARGET_CHANGED", detailsBuilder()
                 .field("previousTargetId", previousTargetId < 0 ? null : previousTargetId)
@@ -240,13 +247,15 @@ public class TargetHpTracker {
 
         TrackedPotion tracked = findTrackedPotionForImpact(packetX, packetY, packetZ);
         if (tracked == null) {
+            Double bestDistanceSq = findBestTrackedPotionDistanceSq(packetX, packetY, packetZ);
             writeEvent("TARGET_POTION_IMPACT_UNMATCHED", detailsBuilder()
                     .field("targetEntityId", target.getEntityId())
                     .field("effectType", effectType)
                     .field("potionDamage", potionDamage)
-                    .field("impactX", packetX)
-                    .field("impactY", packetY)
-                    .field("impactZ", packetZ)
+                    .field("s28ImpactBlockX", packetX)
+                    .field("s28ImpactBlockY", packetY)
+                    .field("s28ImpactBlockZ", packetZ)
+                    .field("bestCandidateDistanceSq", bestDistanceSq)
                     .field("tick", currentTick));
             return;
         }
@@ -308,57 +317,101 @@ public class TargetHpTracker {
     }
 
     public void applyEstimatedTargetPotionHeal(EntityPlayer target, TrackedPotion potion, int currentTick) {
-        double impactX = potion.impactDetected ? potion.impactX : potion.lastX;
-        double impactY = potion.impactDetected ? potion.impactY : potion.lastY;
-        double impactZ = potion.impactDetected ? potion.impactZ : potion.lastZ;
-        double distanceSq = target.getDistanceSq(impactX, impactY, impactZ);
+        double estimatedImpactX = potion.lastX;
+        double estimatedImpactY = potion.lastY;
+        double estimatedImpactZ = potion.lastZ;
+        HealGeometry geometry = estimatePotionHealGeometry(target, estimatedImpactX, estimatedImpactY, estimatedImpactZ);
+        double falloffDistanceSq = geometry.minHistoryAabbDistanceSq;
+        if (Double.isInfinite(falloffDistanceSq)) {
+            falloffDistanceSq = geometry.currentAabbDistanceSq;
+        }
+
         float effectiveness = 0.0F;
-        boolean directHitEstimated = isImpactCenterInTargetHitBox(target, impactX, impactY, impactZ);
+        boolean directHitEstimated = geometry.minHistoryAabbDistanceSq <= POTION_DIRECT_HIT_EPSILON;
+        String healReason;
 
         if (directHitEstimated) {
             effectiveness = 1.0F;
-        } else if (distanceSq < 16.0D) {
-            effectiveness = clampFloat(1.0F - ((float) Math.sqrt(distanceSq) / 4.0F), 0.0F, 1.0F);
+            healReason = "historical_aabb_direct";
+        } else if (!Double.isInfinite(geometry.minHistoryAabbDistanceSq)) {
+            effectiveness = clampFloat(1.0F - ((float) Math.sqrt(falloffDistanceSq) / 4.0F), 0.0F, 1.0F);
+            healReason = "historical_aabb_falloff";
+        } else {
+            effectiveness = clampFloat(1.0F - ((float) Math.sqrt(falloffDistanceSq) / 4.0F), 0.0F, 1.0F);
+            healReason = "fallback_current_distance";
         }
 
         float healHp = (float) Math.floor(INSTANT_HEALTH_II_BASE_HEAL_HP * effectiveness + 0.5F);
-        if (healHp <= 0.0F) return;
 
-        estimatedTargetHp = clampFloat(estimatedTargetHp + healHp, 0.0F, TARGET_HP_DEFAULT);
-        lastEstimatedTargetHeal = healHp;
-        lastEstimatedTargetDamage = 0.0F;
+        if (healHp > 0.0F) {
+            estimatedTargetHp = clampFloat(estimatedTargetHp + healHp, 0.0F, TARGET_HP_DEFAULT);
+            lastEstimatedTargetHeal = healHp;
+            lastEstimatedTargetDamage = 0.0F;
+        }
+
         writeEvent("TARGET_ESTIMATED_HEAL", detailsBuilder()
                 .field("targetEntityId", target.getEntityId())
                 .field("potionEntityId", potion.entityId)
                 .field("healHp", healHp)
                 .field("effectiveness", effectiveness)
                 .field("directHitEstimated", directHitEstimated)
-                .field("impactDetected", potion.impactDetected)
-                .field("impactTick", potion.impactTick < 0 ? null : potion.impactTick)
-                .field("impactDistanceSq", distanceSq)
-                .field("impactX", impactX)
-                .field("impactY", impactY)
-                .field("impactZ", impactZ)
-                .field("lastVisibleX", potion.lastX)
-                .field("lastVisibleY", potion.lastY)
-                .field("lastVisibleZ", potion.lastZ)
+                .field("healReason", healReason)
+//                .field("impactDetected", potion.impactDetected)
+//                .field("impactTick", potion.impactTick < 0 ? null : potion.impactTick)
+//                .field("estimatedImpactX", estimatedImpactX)
+//                .field("estimatedImpactY", estimatedImpactY)
+//                .field("estimatedImpactZ", estimatedImpactZ)
+//                .field("s28ImpactBlockX", potion.impactDetected ? potion.s28ImpactBlockX : null)
+//                .field("s28ImpactBlockY", potion.impactDetected ? potion.s28ImpactBlockY : null)
+//                .field("s28ImpactBlockZ", potion.impactDetected ? potion.s28ImpactBlockZ : null)
+//                .field("minHistoryAabbDistanceSq", Double.isInfinite(geometry.minHistoryAabbDistanceSq) ? null : geometry.minHistoryAabbDistanceSq)
+//                .field("minHistoryAabbTick", geometry.minHistoryAabbTick < 0 ? null : geometry.minHistoryAabbTick)
+//                .field("lastVisibleX", potion.lastX)
+//                .field("lastVisibleY", potion.lastY)
+//                .field("lastVisibleZ", potion.lastZ)
                 .field("estimatedTargetHp", estimatedTargetHp)
                 .field("tick", currentTick));
     }
 
-    private boolean isImpactCenterInTargetHitBox(EntityPlayer target, double impactX, double impactY, double impactZ) {
-        if (target == null || target.boundingBox == null) return false;
+    private HealGeometry estimatePotionHealGeometry(EntityPlayer target, double x, double y, double z) {
+        HealGeometry geometry = new HealGeometry();
 
-        AxisAlignedBB hitBox = target.boundingBox.expand(
-                POTION_DIRECT_HIT_BOX_EXPAND,
-                POTION_DIRECT_HIT_BOX_EXPAND,
-                POTION_DIRECT_HIT_BOX_EXPAND);
+        for (TargetHitboxSnapshot snapshot : targetHitboxHistory) {
+            AxisAlignedBB expanded = snapshot.boundingBox.expand(
+                    POTION_DIRECT_HIT_BOX_EXPAND,
+                    POTION_DIRECT_HIT_BOX_EXPAND,
+                    POTION_DIRECT_HIT_BOX_EXPAND);
+            double aabbDistanceSq = distancePointToAabbSq(x, y, z, expanded);
+            if (aabbDistanceSq < geometry.minHistoryAabbDistanceSq) {
+                geometry.minHistoryAabbDistanceSq = aabbDistanceSq;
+                geometry.minHistoryAabbTick = snapshot.tick;
+            }
+        }
 
-        AxisAlignedBB potionHitbox = AxisAlignedBB.getBoundingBox(impactX, impactY, impactZ,
-                impactX + 1.0D, impactY + 1.0D, impactZ + 1.0D);
+        if (target != null && target.boundingBox != null) {
+            AxisAlignedBB currentExpanded = target.boundingBox.expand(
+                    POTION_DIRECT_HIT_BOX_EXPAND,
+                    POTION_DIRECT_HIT_BOX_EXPAND,
+                    POTION_DIRECT_HIT_BOX_EXPAND);
+            geometry.currentAabbDistanceSq = distancePointToAabbSq(x, y, z, currentExpanded);
+        } else {
+            geometry.currentAabbDistanceSq = Double.POSITIVE_INFINITY;
+        }
 
-        boolean intersects = hitBox.intersectsWith(potionHitbox);
-        return intersects;
+        return geometry;
+    }
+
+    private double distancePointToAabbSq(double x, double y, double z, AxisAlignedBB box) {
+        double dx = axisDistance(x, box.minX, box.maxX);
+        double dy = axisDistance(y, box.minY, box.maxY);
+        double dz = axisDistance(z, box.minZ, box.maxZ);
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private double axisDistance(double value, double min, double max) {
+        if (value < min) return min - value;
+        if (value > max) return value - max;
+        return 0.0D;
     }
 
     private TrackedPotion findTrackedPotionForImpact(int impactX, int impactY, int impactZ) {
@@ -377,6 +430,47 @@ public class TargetHpTracker {
         }
 
         return bestDistanceSq <= 16.0D ? best : null;
+    }
+
+    private Double findBestTrackedPotionDistanceSq(int impactX, int impactY, int impactZ) {
+        double bestDistanceSq = Double.MAX_VALUE;
+
+        for (TrackedPotion potion : targetPotions.values()) {
+            double dx = potion.lastX - impactX;
+            double dy = potion.lastY - impactY;
+            double dz = potion.lastZ - impactZ;
+            double distanceSq = dx * dx + dy * dy + dz * dz;
+            if (distanceSq < bestDistanceSq) {
+                bestDistanceSq = distanceSq;
+            }
+        }
+
+        return bestDistanceSq == Double.MAX_VALUE ? null : bestDistanceSq;
+    }
+
+    private void rememberTargetHitbox(EntityPlayer target, int currentTick) {
+        if (target == null || target.boundingBox == null) {
+            targetHitboxHistory.clear();
+            return;
+        }
+
+        AxisAlignedBB box = AxisAlignedBB.getBoundingBox(
+                target.boundingBox.minX,
+                target.boundingBox.minY,
+                target.boundingBox.minZ,
+                target.boundingBox.maxX,
+                target.boundingBox.maxY,
+                target.boundingBox.maxZ);
+        targetHitboxHistory.addLast(new TargetHitboxSnapshot(
+                currentTick,
+                target.posX,
+                target.posY,
+                target.posZ,
+                box));
+
+        while (targetHitboxHistory.size() > TARGET_HITBOX_HISTORY_TICKS) {
+            targetHitboxHistory.removeFirst();
+        }
     }
 
     private int getTargetArmor(EntityPlayer target) {
@@ -474,6 +568,29 @@ public class TargetHpTracker {
         if (eventSink != null) {
             eventSink.writeEvent(type, details);
         }
+    }
+
+    private class HealGeometry {
+        double minHistoryAabbDistanceSq = Double.POSITIVE_INFINITY;
+        int minHistoryAabbTick = -1;
+        double currentAabbDistanceSq = Double.POSITIVE_INFINITY;
+    }
+
+    private class TargetHitboxSnapshot {
+        final int tick;
+        final double posX;
+        final double posY;
+        final double posZ;
+        final AxisAlignedBB boundingBox;
+
+        TargetHitboxSnapshot(int tick, double posX, double posY, double posZ, AxisAlignedBB boundingBox) {
+            this.tick = tick;
+            this.posX = posX;
+            this.posY = posY;
+            this.posZ = posZ;
+            this.boundingBox = boundingBox;
+        }
+
     }
 
 }

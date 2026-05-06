@@ -16,9 +16,9 @@ public class TrackedPotion {
     public boolean hasPosition;
     public boolean impactDetected;
     public int impactTick = -1;
-    public double impactX;
-    public double impactY;
-    public double impactZ;
+    public int s28ImpactBlockX;
+    public int s28ImpactBlockY;
+    public int s28ImpactBlockZ;
 
     public TrackedPotion(int entityId, int firstSeenTick) {
         this.entityId = entityId;
@@ -46,11 +46,11 @@ public class TrackedPotion {
         this.lastTicksExisted = ticksExisted;
     }
 
-    public void markImpact(double x, double y, double z, int currentTick) {
+    public void markImpact(int s28BlockX, int s28BlockY, int s28BlockZ, int currentTick) {
         impactDetected = true;
         impactTick = currentTick;
-        impactX = x;
-        impactY = y;
-        impactZ = z;
+        s28ImpactBlockX = s28BlockX;
+        s28ImpactBlockY = s28BlockY;
+        s28ImpactBlockZ = s28BlockZ;
     }
 }
