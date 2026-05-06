@@ -51,7 +51,8 @@ public class Recorder {
             sendMessage(message);
         }
     });
-    private final TargetHpTracker targetHpTracker = new TargetHpTracker(mc, new TargetHpTracker.EventSink() {
+    private final ItemsHandler itemsHandler = new ItemsHandler(mc);
+    private final TargetHpTracker targetHpTracker = new TargetHpTracker(mc, itemsHandler, new TargetHpTracker.EventSink() {
         public void writeEvent(String type, JsonLineBuilder details) {
             Recorder.this.writeEvent(type, details);
         }
@@ -84,8 +85,6 @@ public class Recorder {
             Recorder.this.handleIncomingPacket(packet, tick);
         }
     });
-    private final ItemsHandler itemsHandler = new ItemsHandler(mc);
-
     private KeyBinding recorderGuiKey;
     private RecorderGui recorderOverlay;
 
@@ -376,7 +375,7 @@ public class Recorder {
             myCombo++;
             targetCombo = 0;
             lastHitLandedTick = recordingTickIndex;
-            targetHpTracker.applyEstimatedTargetDamage(recordingTickIndex);
+            targetHpTracker.applyEstimatedTargetDamage(recordingTickIndex, target, mc.thePlayer == null ? null : mc.thePlayer.getHeldItem());
             targetFoodTracker.addTakingDamageExhaustion();
         }
         lastTargetHurtTime = target.hurtTime;

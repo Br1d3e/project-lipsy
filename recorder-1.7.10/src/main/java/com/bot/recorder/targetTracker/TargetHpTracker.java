@@ -1,13 +1,17 @@
 package com.bot.recorder.targetTracker;
 
+import com.bot.recorder.ItemsHandler;
 import com.bot.recorder.recordWriter.JsonLineBuilder;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.enchantment.Enchantment;
+import net.minecraft.enchantment.EnchantmentHelper;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.projectile.EntityPotion;
 import net.minecraft.init.Items;
 import net.minecraft.item.ItemPotion;
+import net.minecraft.item.ItemStack;
 import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
 import net.minecraft.util.AxisAlignedBB;
@@ -21,12 +25,12 @@ public class TargetHpTracker {
 
     private final Minecraft mc;
     private final EventSink eventSink;
+    private final ItemsHandler itemsHandler;
     private static final float TARGET_HP_DEFAULT = 20.0F;
-    private static final float SWORD_BASE_DAMAGE = 7.0F;
     private static final float CRIT_MULTIPLIER = 1.5F;
-    private static final int SHARPNESS_LEVEL = 4;
-    private static final int ARMOR_POINTS = 20;
-    private static final int PROTECTION_LEVEL = 2;
+    private static final int DEFAULT_SHARPNESS_LEVEL = 4;
+    private static final int DEFAULT_TARGET_ARMOR_POINTS = 20;
+    private static final int DEFAULT_TARGET_PROTECTION_LEVEL = 2;
     private static final float INSTANT_HEALTH_II_BASE_HEAL_HP = 8.0F;
     private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.3D;
     private static final int NATURAL_REGEN_INTERVAL_TICKS = 80;
@@ -36,12 +40,15 @@ public class TargetHpTracker {
     private float lastEstimatedTargetDamage = 0.0F;
     private float lastEstimatedTargetHeal = 0.0F;
     private int naturalRegenTimer = 0;
+    private int targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
+    private int targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
     private final Map<Integer, TrackedPotion> targetPotions = new HashMap<Integer, TrackedPotion>();
     private final Set<Integer> processedTargetPotionEntityIds = new HashSet<Integer>();
 
-    public TargetHpTracker(Minecraft mc, EventSink eventSink) {
+    public TargetHpTracker(Minecraft mc, ItemsHandler itemsHandler, EventSink eventSink) {
         this.mc = mc;
         this.eventSink = eventSink;
+        this.itemsHandler = itemsHandler;
     }
 
     public void reset() {
@@ -50,6 +57,8 @@ public class TargetHpTracker {
         lastEstimatedTargetDamage = 0.0F;
         lastEstimatedTargetHeal = 0.0F;
         naturalRegenTimer = 0;
+        targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
+        targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
     }
@@ -66,6 +75,7 @@ public class TargetHpTracker {
         naturalRegenTimer = 0;
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
+        updateTargetArmorState(target);
 
         writeEvent("TARGET_CHANGED", detailsBuilder()
                 .field("previousTargetId", previousTargetId < 0 ? null : previousTargetId)
@@ -94,22 +104,29 @@ public class TargetHpTracker {
         return naturalRegenTimer;
     }
 
-    public void applyEstimatedTargetDamage(int currentTick) {
-        float damage = calculateEstimatedSwordDamage();
+    public void applyEstimatedTargetDamage(int currentTick, EntityPlayer target, ItemStack attackerHeldItem) {
+        updateTargetArmorState(target);
+        int baseDamage = getSwordBaseDamage(itemsHandler.heldSwordType(attackerHeldItem));
+        int sharpnessLevel = getSharpnessLevel(attackerHeldItem);
+        float damage = calculateEstimatedSwordDamage(baseDamage, sharpnessLevel);
         estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
         lastEstimatedTargetDamage = damage;
         lastEstimatedTargetHeal = 0.0F;
         writeEvent("TARGET_ESTIMATED_DAMAGE", detailsBuilder()
                 .field("targetEntityId", trackedTargetId < 0 ? null : trackedTargetId)
                 .field("damageHp", damage)
+                .field("baseDamage", baseDamage)
+                .field("sharpnessLevel", sharpnessLevel)
+                .field("targetArmorPoints", targetArmorPoints)
+                .field("targetProtectionLevel", targetProtectionLevel)
                 .field("estimatedTargetHp", estimatedTargetHp)
                 .field("tick", currentTick));
     }
 
-    public float calculateEstimatedSwordDamage() {
-        float preArmorDamage = SWORD_BASE_DAMAGE * CRIT_MULTIPLIER + 1.25F * SHARPNESS_LEVEL;
-        float armorMultiplier = (25.0F - ARMOR_POINTS) / 25.0F;
-        float epf = Math.min(PROTECTION_LEVEL * 4.0F, 20.0F);
+    public float calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel) {
+        float preArmorDamage = baseDamage * CRIT_MULTIPLIER + 1.25F * sharpnessLevel;
+        float armorMultiplier = (25.0F - targetArmorPoints) / 25.0F;
+        float epf = Math.min(targetProtectionLevel * 4.0F, 20.0F);
         float protectionMultiplier = (25.0F - epf) / 25.0F;
 
         return preArmorDamage * armorMultiplier * protectionMultiplier;
@@ -314,7 +331,62 @@ public class TargetHpTracker {
         return bestDistanceSq <= 16.0D ? best : null;
     }
 
+    private int getTargetArmor(EntityPlayer target) {
+        if (target == null) return 0;
+        return target.getTotalArmorValue();
+    }
 
+    private void updateTargetArmorState(EntityPlayer target) {
+        if (target == null) {
+            targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
+            targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
+            return;
+        }
+
+        targetArmorPoints = getTargetArmor(target);
+        targetProtectionLevel = getProtectionLevel(target);
+    }
+
+    private int getProtectionLevel(EntityPlayer target) {
+        if (target == null) return 0;
+
+        int protectionLevel = 0;
+
+        for (int slot = 0; slot < 4; slot++) {
+            ItemStack armor = target.getCurrentArmor(slot);
+
+            if (armor != null) {
+                int prot = EnchantmentHelper.getEnchantmentLevel(
+                        Enchantment.protection.effectId, armor
+                );
+
+                protectionLevel += prot;
+            }
+        }
+
+        return protectionLevel;
+    }
+
+    private int getSwordBaseDamage(String swordType) {
+        if ("diamond".equals(swordType)) {
+            return 7;
+        } else if ("iron".equals(swordType)) {
+            return 6;
+        } else if ("stone".equals(swordType)) {
+            return 5;
+        } else if ("gold".equals(swordType) || "wood".equals(swordType)) {
+            return 4;
+        }
+
+        return 1;
+    }
+
+    private int getSharpnessLevel(ItemStack stack) {
+        if (stack == null) return DEFAULT_SHARPNESS_LEVEL;
+        if (!itemsHandler.isSword(stack)) return 0;
+
+        return EnchantmentHelper.getEnchantmentLevel(Enchantment.sharpness.effectId, stack);
+    }
 
     private float clampFloat(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));

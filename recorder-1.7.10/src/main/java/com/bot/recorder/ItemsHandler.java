@@ -133,6 +133,31 @@ public class ItemsHandler {
         return getItemTypeLower(stack).contains("enderpearl");
     }
 
+    public boolean isSword(ItemStack stack) {
+        String type = getItemTypeLower(stack);
+
+        return type.contains("sword");
+    }
+
+    public String heldSwordType(ItemStack stack) {
+        String type = getItemTypeLower(stack);
+
+        if (!isSword(stack)) return "";
+
+        if (type.contains("diamond")) {
+            return "diamond";
+        } else if (type.contains("iron")) {
+            return "iron";
+        } else if (type.contains("stone")) {
+            return "stone";
+        } else if (type.contains("gold") || type.contains("golden")) {
+            return "gold";
+        } else if (type.contains("wood")) {
+            return "wood";
+        }
+        return "";
+    }
+
     private interface ItemMatcher {
         boolean matches(ItemStack stack);
     }
