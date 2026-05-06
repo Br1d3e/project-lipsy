@@ -11,7 +11,6 @@ import net.minecraft.item.ItemPotion;
 import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
 import net.minecraft.util.AxisAlignedBB;
-import net.minecraft.util.Vec3;
 
 import java.util.*;
 
@@ -29,7 +28,7 @@ public class TargetHpTracker {
     private static final int ARMOR_POINTS = 20;
     private static final int PROTECTION_LEVEL = 2;
     private static final float INSTANT_HEALTH_II_BASE_HEAL_HP = 8.0F;
-    private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.1D;
+    private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.3D;
     private static final int NATURAL_REGEN_INTERVAL_TICKS = 80;
     private static final float NATURAL_REGEN_HEAL_HP = 1.0F;
     private int trackedTargetId = -1;
@@ -161,7 +160,8 @@ public class TargetHpTracker {
                 tracked = new TrackedPotion(potionId, currentTick);
                 targetPotions.put(potionId, tracked);
             }
-            tracked.update(potion.posX, potion.posY, potion.posZ, potion.ticksExisted);
+            tracked.update(potion.posX, potion.posY, potion.posZ, potion.motionX, potion.motionY, potion.motionZ, potion.ticksExisted);
+            tracked.updateDirectHit(getExpandedTargetHitBox(target), currentTick);
         }
 
         Iterator<Map.Entry<Integer, TrackedPotion>> iterator = targetPotions.entrySet().iterator();
@@ -208,7 +208,7 @@ public class TargetHpTracker {
     public void applyEstimatedTargetPotionHeal(EntityPlayer target, TrackedPotion potion, int currentTick) {
         double distanceSq = target.getDistanceSq(potion.lastX, potion.lastY, potion.lastZ);
         float effectiveness = 0.0F;
-        boolean directHitEstimated = isPotionDirectHit(target, potion);
+        boolean directHitEstimated = potion.everDirectHit;
 
         if (directHitEstimated) {
             effectiveness = 1.0F;
@@ -228,6 +228,7 @@ public class TargetHpTracker {
                 .field("healHp", healHp)
                 .field("effectiveness", effectiveness)
                 .field("directHitEstimated", directHitEstimated)
+                .field("firstDirectHitTick", potion.firstDirectHitTick < 0 ? null : potion.firstDirectHitTick)
                 .field("impactDistanceSq", distanceSq)
                 .field("segmentStartX", potion.previousX)
                 .field("segmentStartY", potion.previousY)
@@ -235,23 +236,29 @@ public class TargetHpTracker {
                 .field("segmentEndX", potion.lastX)
                 .field("segmentEndY", potion.lastY)
                 .field("segmentEndZ", potion.lastZ)
+                .field("predictedSegmentEndX", potion.lastX + potion.motionX)
+                .field("predictedSegmentEndY", potion.lastY + potion.motionY)
+                .field("predictedSegmentEndZ", potion.lastZ + potion.motionZ)
+                .field("motionX", potion.motionX)
+                .field("motionY", potion.motionY)
+                .field("motionZ", potion.motionZ)
+                .field("directHitSegmentStartX", directHitEstimated ? potion.directHitSegmentStartX : null)
+                .field("directHitSegmentStartY", directHitEstimated ? potion.directHitSegmentStartY : null)
+                .field("directHitSegmentStartZ", directHitEstimated ? potion.directHitSegmentStartZ : null)
+                .field("directHitSegmentEndX", directHitEstimated ? potion.directHitSegmentEndX : null)
+                .field("directHitSegmentEndY", directHitEstimated ? potion.directHitSegmentEndY : null)
+                .field("directHitSegmentEndZ", directHitEstimated ? potion.directHitSegmentEndZ : null)
                 .field("estimatedTargetHp", estimatedTargetHp)
                 .field("tick", currentTick));
     }
 
-    private boolean isPotionDirectHit(EntityPlayer target, TrackedPotion potion) {
-        if (target == null || target.boundingBox == null) return false;
+    private AxisAlignedBB getExpandedTargetHitBox(EntityPlayer target) {
+        if (target == null || target.boundingBox == null) return null;
 
-        AxisAlignedBB hitBox = target.boundingBox.expand(
+        return target.boundingBox.expand(
                 POTION_DIRECT_HIT_BOX_EXPAND,
                 POTION_DIRECT_HIT_BOX_EXPAND,
                 POTION_DIRECT_HIT_BOX_EXPAND);
-        Vec3 segmentStart = Vec3.createVectorHelper(potion.previousX, potion.previousY, potion.previousZ);
-        Vec3 segmentEnd = Vec3.createVectorHelper(potion.lastX, potion.lastY, potion.lastZ);
-
-        return hitBox.isVecInside(segmentStart)
-                || hitBox.isVecInside(segmentEnd)
-                || hitBox.calculateIntercept(segmentStart, segmentEnd) != null;
     }
 
 
