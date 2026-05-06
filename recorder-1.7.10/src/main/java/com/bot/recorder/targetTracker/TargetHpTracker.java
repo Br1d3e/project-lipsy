@@ -124,11 +124,11 @@ public class TargetHpTracker {
         return calculatePearlDamageEpf();
     }
 
-    public void applyEstimatedTargetDamage(int currentTick, EntityPlayer target, ItemStack attackerHeldItem) {
+    public void applyEstimatedTargetDamage(int currentTick, EntityPlayer target, ItemStack attackerHeldItem, boolean criticalHit) {
         updateTargetArmorState(target);
         int baseDamage = getSwordBaseDamage(itemsHandler.heldSwordType(attackerHeldItem));
         int sharpnessLevel = getSharpnessLevel(attackerHeldItem);
-        float damage = calculateEstimatedSwordDamage(baseDamage, sharpnessLevel);
+        float damage = calculateEstimatedSwordDamage(baseDamage, sharpnessLevel, criticalHit);
         estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
         lastEstimatedTargetDamage = damage;
         lastEstimatedTargetHeal = 0.0F;
@@ -137,14 +137,17 @@ public class TargetHpTracker {
                 .field("damageHp", damage)
                 .field("baseDamage", baseDamage)
                 .field("sharpnessLevel", sharpnessLevel)
+                .field("criticalHit", criticalHit)
+                .field("critMultiplier", criticalHit ? CRIT_MULTIPLIER : 1.0F)
                 .field("targetArmorPoints", targetArmorPoints)
                 .field("targetProtectionEpf", targetProtectionEpf)
                 .field("estimatedTargetHp", estimatedTargetHp)
                 .field("tick", currentTick));
     }
 
-    public float calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel) {
-        float preArmorDamage = baseDamage * CRIT_MULTIPLIER + 1.25F * sharpnessLevel;
+    public float calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel, boolean criticalHit) {
+        float critMultiplier = criticalHit ? CRIT_MULTIPLIER : 1.0F;
+        float preArmorDamage = baseDamage * critMultiplier + 1.25F * sharpnessLevel;
         float armorMultiplier = (25.0F - targetArmorPoints) / 25.0F;
         float epf = Math.min(targetProtectionEpf, 20.0F);
         float protectionMultiplier = (25.0F - epf) / 25.0F;

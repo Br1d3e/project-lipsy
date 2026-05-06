@@ -20,6 +20,7 @@ import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.client.C02PacketUseEntity;
+import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
 import net.minecraft.network.play.client.C09PacketHeldItemChange;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
@@ -118,6 +119,10 @@ public class Recorder {
     private int lastVelocityMotionXRaw = 0;
     private int lastVelocityMotionYRaw = 0;
     private int lastVelocityMotionZRaw = 0;
+    private int lastCriticalMovementPacketTick = -1;
+    private int lastCriticalAttackTick = -1;
+    private int lastCriticalAttackTargetEntityId = -1;
+    private boolean lastCriticalAttackWasCritical = false;
     private int lastInventorySampleTick = -1;
     private List<String> cachedHotbar = new ArrayList<String>();
     private int cachedInventoryFood = 0;
@@ -379,7 +384,8 @@ public class Recorder {
             myCombo++;
             targetCombo = 0;
             lastHitLandedTick = recordingTickIndex;
-            targetHpTracker.applyEstimatedTargetDamage(recordingTickIndex, target, mc.thePlayer == null ? null : mc.thePlayer.getHeldItem());
+            targetHpTracker.applyEstimatedTargetDamage(recordingTickIndex, target, mc.thePlayer == null ? null : mc.thePlayer.getHeldItem(),
+                    wasLastLandedHitCritical(target));
             targetFoodTracker.addTakingDamageExhaustion();
         }
         lastTargetHurtTime = target.hurtTime;
@@ -395,6 +401,13 @@ public class Recorder {
                     .field("health", mc.thePlayer.getHealth()));
         }
         lastMyHurtTime = mc.thePlayer.hurtTime;
+    }
+
+    private boolean wasLastLandedHitCritical(EntityPlayer target) {
+        if (!lastCriticalAttackWasCritical) return false;
+        if (lastCriticalAttackTick < 0 || recordingTickIndex - lastCriticalAttackTick > 3) return false;
+
+        return target != null && target.getEntityId() == lastCriticalAttackTargetEntityId;
     }
 
     private void updateComboTargetState(EntityPlayer target) {
@@ -556,6 +569,8 @@ public class Recorder {
 
         if (packet instanceof C02PacketUseEntity) {
             handleUseEntityPacket((C02PacketUseEntity) packet, tick);
+        } else if (packet instanceof C03PacketPlayer) {
+            handlePlayerMovementPacket((C03PacketPlayer) packet, tick);
         } else if (packet instanceof C08PacketPlayerBlockPlacement) {
             handleUseItemPacket((C08PacketPlayerBlockPlacement) packet, tick);
         } else if (packet instanceof C09PacketHeldItemChange) {
@@ -571,10 +586,36 @@ public class Recorder {
                 .field("targetEntityType", entity == null ? null : entity.getClass().getSimpleName());
 
         if (packet.getAction() == C02PacketUseEntity.Action.ATTACK) {
+            boolean criticalHit = isCriticalAttackPacket(tick);
             lastAttackTick = tick;
             lastHitLandedTick = tick;
+            lastCriticalAttackTick = tick;
+            lastCriticalAttackTargetEntityId = entity == null ? -1 : entity.getEntityId();
+            lastCriticalAttackWasCritical = criticalHit;
+            details.field("criticalHit", criticalHit)
+                    .field("lastCriticalMovementPacketTick", lastCriticalMovementPacketTick < 0 ? null : lastCriticalMovementPacketTick);
             writeEvent("ATTACK_PACKET_SENT", details);
         }
+    }
+
+    private void handlePlayerMovementPacket(C03PacketPlayer packet, int tick) {
+        if (!packet.func_149465_i()) {
+            lastCriticalMovementPacketTick = tick;
+        }
+    }
+
+    private boolean isCriticalAttackPacket(int tick) {
+        if (lastCriticalMovementPacketTick >= 0 && tick - lastCriticalMovementPacketTick <= 1) {
+            return true;
+        }
+
+        if (mc.thePlayer == null) return false;
+        if (mc.thePlayer.onGround) return false;
+        if (mc.thePlayer.fallDistance <= 0.0F) return false;
+        if (mc.thePlayer.isOnLadder()) return false;
+        if (mc.thePlayer.isInWater()) return false;
+        if (mc.thePlayer.isPotionActive(Potion.blindness)) return false;
+        return mc.thePlayer.ridingEntity == null;
     }
 
     private void handleUseItemPacket(C08PacketPlayerBlockPlacement packet, int tick) {
@@ -810,6 +851,10 @@ public class Recorder {
         lastVelocityMotionXRaw = 0;
         lastVelocityMotionYRaw = 0;
         lastVelocityMotionZRaw = 0;
+        lastCriticalMovementPacketTick = -1;
+        lastCriticalAttackTick = -1;
+        lastCriticalAttackTargetEntityId = -1;
+        lastCriticalAttackWasCritical = false;
         packetHandler.resetSession();
         myCombo = 0;
         targetCombo = 0;
