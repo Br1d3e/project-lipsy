@@ -135,6 +135,7 @@ public class Recorder {
     private Integer cachedBlockDistanceRight = null;
     private final JsonLineBuilder frameBuilder = new JsonLineBuilder(4096);
     private final Set<Integer> seenEnemyPearlEntityIds = new HashSet<Integer>();
+    private final Set<Integer> activeEnemyPearlEntityIds = new HashSet<Integer>();
 
     // === combo tracking ===
     private int myCombo = 0;
@@ -344,6 +345,10 @@ public class Recorder {
         frame.field("targetEstimatedHpDefault", targetHpTracker.getTargetHpDefault());
         frame.field("targetEstimatedLastDamage", targetExists ? targetHpTracker.getLastEstimatedTargetDamage() : null);
         frame.field("targetEstimatedLastHeal", targetExists ? targetHpTracker.getLastEstimatedTargetHeal() : null);
+        frame.field("targetProtectionLevel", targetExists ? targetHpTracker.getTargetProtectionLevel() : null);
+        frame.field("targetFeatherFallingLevel", targetExists ? targetHpTracker.getTargetFeatherFallingLevel() : null);
+        frame.field("targetProtectionEpf", targetExists ? targetHpTracker.getTargetProtectionEpf() : null);
+        frame.field("targetPearlDamageEpf", targetExists ? targetHpTracker.getTargetPearlDamageEpf() : null);
         frame.field("targetHurtTime", targetExists ? target.hurtTime : null);
         frame.field("targetHurtResistantTime", targetExists ? target.hurtResistantTime : null);
         frame.field("targetOnGround", targetExists ? target.onGround : null);
@@ -476,19 +481,28 @@ public class Recorder {
         }
 
         if (target == null || mc.theWorld == null) {
+            activeEnemyPearlEntityIds.clear();
             return false;
         }
 
+        Set<Integer> visibleEnemyPearlIds = new HashSet<Integer>();
         for (Object entityObject : mc.theWorld.loadedEntityList) {
             if (!(entityObject instanceof EntityEnderPearl)) continue;
 
             EntityEnderPearl pearl = (EntityEnderPearl) entityObject;
             int pearlId = pearl.getEntityId();
+            if (activeEnemyPearlEntityIds.contains(pearlId)) {
+                visibleEnemyPearlIds.add(pearlId);
+                continue;
+            }
+
             if (seenEnemyPearlEntityIds.contains(pearlId)) continue;
 
             if (!isEnemyPearlFromTarget(pearl, target)) continue;
 
             seenEnemyPearlEntityIds.add(pearlId);
+            activeEnemyPearlEntityIds.add(pearlId);
+            visibleEnemyPearlIds.add(pearlId);
             lastEnemyPearlTick = currentTick;
             enemyPearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
             writeEvent("ENEMY_PEARL_THROW", detailsBuilder()
@@ -496,10 +510,23 @@ public class Recorder {
                     .field("pearlEntityId", pearlId)
                     .field("pearlTicksExisted", pearl.ticksExisted)
                     .field("distanceToTarget", (double) target.getDistanceToEntity(pearl)));
+            applyEnemyPearlDamageForLandedPearls(target, visibleEnemyPearlIds, currentTick);
             return true;
         }
 
+        applyEnemyPearlDamageForLandedPearls(target, visibleEnemyPearlIds, currentTick);
         return false;
+    }
+
+    private void applyEnemyPearlDamageForLandedPearls(EntityPlayer target, Set<Integer> visibleEnemyPearlIds, int currentTick) {
+        Iterator<Integer> iterator = activeEnemyPearlEntityIds.iterator();
+        while (iterator.hasNext()) {
+            int pearlId = iterator.next();
+            if (visibleEnemyPearlIds.contains(pearlId)) continue;
+
+            targetHpTracker.applyEstimatedTargetPearlDamage(currentTick, target, pearlId);
+            iterator.remove();
+        }
     }
 
     private boolean isEnemyPearlFromTarget(EntityEnderPearl pearl, EntityPlayer target) {
@@ -767,6 +794,7 @@ public class Recorder {
         pearlCooldownTicksRemaining = 0;
         enemyPearlCooldownTicksRemaining = 0;
         seenEnemyPearlEntityIds.clear();
+        activeEnemyPearlEntityIds.clear();
         previousUseItemPressed = false;
         previousAttackPressed = false;
         lastAttackTick = -1;

@@ -15,6 +15,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
 import net.minecraft.util.AxisAlignedBB;
+import net.minecraft.util.MathHelper;
 
 import java.util.*;
 
@@ -31,6 +32,8 @@ public class TargetHpTracker {
     private static final int DEFAULT_SHARPNESS_LEVEL = 4;
     private static final int DEFAULT_TARGET_ARMOR_POINTS = 20;
     private static final int DEFAULT_TARGET_PROTECTION_LEVEL = 2;
+    private static final int DEFAULT_TARGET_FEATHER_FALLING_LEVEL = 0;
+    private static final float PEARL_BASE_DAMAGE_HP = 5.0F;
     private static final float INSTANT_HEALTH_II_BASE_HEAL_HP = 8.0F;
     private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.3D;
     private static final int NATURAL_REGEN_INTERVAL_TICKS = 80;
@@ -42,6 +45,8 @@ public class TargetHpTracker {
     private int naturalRegenTimer = 0;
     private int targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
     private int targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
+    private int targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
+    private int targetProtectionEpf = calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
     private final Map<Integer, TrackedPotion> targetPotions = new HashMap<Integer, TrackedPotion>();
     private final Set<Integer> processedTargetPotionEntityIds = new HashSet<Integer>();
 
@@ -59,13 +64,18 @@ public class TargetHpTracker {
         naturalRegenTimer = 0;
         targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
         targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
+        targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
+        targetProtectionEpf = calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
     }
 
     public void updateTargetState(EntityPlayer target, int currentTick) {
         int currentTargetId = target == null ? -1 : target.getEntityId();
-        if (currentTargetId == trackedTargetId) return;
+        if (currentTargetId == trackedTargetId) {
+            updateTargetArmorState(target);
+            return;
+        }
 
         int previousTargetId = trackedTargetId;
         trackedTargetId = currentTargetId;
@@ -104,6 +114,22 @@ public class TargetHpTracker {
         return naturalRegenTimer;
     }
 
+    public int getTargetProtectionLevel() {
+        return targetProtectionLevel;
+    }
+
+    public int getTargetFeatherFallingLevel() {
+        return targetFeatherFallingLevel;
+    }
+
+    public int getTargetProtectionEpf() {
+        return targetProtectionEpf;
+    }
+
+    public int getTargetPearlDamageEpf() {
+        return calculatePearlDamageEpf();
+    }
+
     public void applyEstimatedTargetDamage(int currentTick, EntityPlayer target, ItemStack attackerHeldItem) {
         updateTargetArmorState(target);
         int baseDamage = getSwordBaseDamage(itemsHandler.heldSwordType(attackerHeldItem));
@@ -130,6 +156,28 @@ public class TargetHpTracker {
         float protectionMultiplier = (25.0F - epf) / 25.0F;
 
         return preArmorDamage * armorMultiplier * protectionMultiplier;
+    }
+
+    public void applyEstimatedTargetPearlDamage(int currentTick, EntityPlayer target, int pearlEntityId) {
+        updateTargetArmorState(target);
+        int totalEpf = getTargetPearlDamageEpf();
+        float damage = calculateEstimatedPearlDamage(totalEpf);
+        estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
+        lastEstimatedTargetDamage = damage;
+        lastEstimatedTargetHeal = 0.0F;
+        writeEvent("TARGET_ESTIMATED_PEARL_DAMAGE", detailsBuilder()
+                .field("targetEntityId", target == null ? null : target.getEntityId())
+                .field("pearlEntityId", pearlEntityId)
+                .field("damageHp", damage)
+                .field("targetProtectionEpf", targetProtectionEpf)
+                .field("totalEpf", totalEpf)
+                .field("estimatedTargetHp", estimatedTargetHp)
+                .field("tick", currentTick));
+    }
+
+    public float calculateEstimatedPearlDamage(int totalEpf) {
+        float clampedEpf = Math.min(totalEpf, 20);
+        return PEARL_BASE_DAMAGE_HP * (25.0F - clampedEpf) / 25.0F;
     }
 
     public boolean updateNaturalRegen(int currentTick, int targetFoodLevel) {
@@ -340,11 +388,15 @@ public class TargetHpTracker {
         if (target == null) {
             targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
             targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
+            targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
+            targetProtectionEpf = calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
             return;
         }
 
         targetArmorPoints = getTargetArmor(target);
         targetProtectionLevel = getProtectionLevel(target);
+        targetFeatherFallingLevel = getFeatherFallingLevel(target);
+        targetProtectionEpf = getProtectionEpf(target);
     }
 
     private int getProtectionLevel(EntityPlayer target) {
@@ -365,6 +417,42 @@ public class TargetHpTracker {
         }
 
         return protectionLevel;
+    }
+
+    private int getFeatherFallingLevel(EntityPlayer target) {
+        if (target == null) return 0;
+
+        ItemStack boots = target.getCurrentArmor(0);
+        if (boots == null) return 0;
+
+        return EnchantmentHelper.getEnchantmentLevel(Enchantment.featherFalling.effectId, boots);
+    }
+
+    private int getProtectionEpf(EntityPlayer target) {
+        if (target == null) return calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
+
+        int protectionEpf = 0;
+
+        for (int slot = 0; slot < 4; slot++) {
+            ItemStack armor = target.getCurrentArmor(slot);
+            if (armor == null) continue;
+
+            int protectionLevel = EnchantmentHelper.getEnchantmentLevel(Enchantment.protection.effectId, armor);
+            protectionEpf += calculateProtectionEpf(protectionLevel);
+        }
+
+        return protectionEpf;
+    }
+
+    private int calculateProtectionEpf(int protectionLevel) {
+        if (protectionLevel <= 0) return 0;
+
+        return MathHelper.floor_float(((6.0F + protectionLevel * protectionLevel) / 3.0F) * 0.75F);
+    }
+
+    private int calculatePearlDamageEpf() {
+        int featherFallingEpf = MathHelper.floor_float(((6.0F + targetFeatherFallingLevel * targetFeatherFallingLevel) / 3.0F) * 2.5F);
+        return targetProtectionEpf + featherFallingEpf;
     }
 
     private int getSwordBaseDamage(String swordType) {
