@@ -135,7 +135,8 @@ public class TargetHpTracker {
         updateTargetArmorState(target);
         int baseDamage = getSwordBaseDamage(itemsHandler.heldSwordType(attackerHeldItem));
         int sharpnessLevel = getSharpnessLevel(attackerHeldItem);
-        float damage = calculateEstimatedSwordDamage(baseDamage, sharpnessLevel, criticalHit);
+        SwordDamageEstimate damageEstimate = calculateEstimatedSwordDamage(baseDamage, sharpnessLevel, criticalHit);
+        float damage = damageEstimate.expectedDamage;
         estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
         lastEstimatedTargetDamage = damage;
         lastEstimatedTargetHeal = 0.0F;
@@ -148,18 +149,30 @@ public class TargetHpTracker {
                 .field("critMultiplier", criticalHit ? CRIT_MULTIPLIER : 1.0F)
                 .field("targetArmorPoints", targetArmorPoints)
                 .field("targetProtectionEpf", targetProtectionEpf)
+                .field("expectedRandomProtectionEpf", damageEstimate.expectedRandomProtectionEpf)
+                .field("minRandomProtectionEpf", damageEstimate.minRandomProtectionEpf)
+                .field("maxRandomProtectionEpf", damageEstimate.maxRandomProtectionEpf)
+                .field("minPossibleDamageHp", damageEstimate.minPossibleDamage)
+                .field("maxPossibleDamageHp", damageEstimate.maxPossibleDamage)
                 .field("estimatedTargetHp", estimatedTargetHp)
                 .field("tick", currentTick));
     }
 
-    public float calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel, boolean criticalHit) {
+    public SwordDamageEstimate calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel, boolean criticalHit) {
         float critMultiplier = criticalHit ? CRIT_MULTIPLIER : 1.0F;
         float preArmorDamage = baseDamage * critMultiplier + 1.25F * sharpnessLevel;
         float armorMultiplier = (25.0F - targetArmorPoints) / 25.0F;
-        float epf = Math.min(targetProtectionEpf, 20.0F);
-        float protectionMultiplier = (25.0F - epf) / 25.0F;
+        int minRandomEpf = getMinRandomizedProtectionEpf(targetProtectionEpf);
+        int maxRandomEpf = getMaxRandomizedProtectionEpf(targetProtectionEpf);
+        float expectedRandomEpf = getExpectedRandomizedProtectionEpf(targetProtectionEpf);
 
-        return preArmorDamage * armorMultiplier * protectionMultiplier;
+        return new SwordDamageEstimate(
+                calculateDamageAfterProtection(preArmorDamage, armorMultiplier, expectedRandomEpf),
+                calculateDamageAfterProtection(preArmorDamage, armorMultiplier, maxRandomEpf),
+                calculateDamageAfterProtection(preArmorDamage, armorMultiplier, minRandomEpf),
+                expectedRandomEpf,
+                minRandomEpf,
+                maxRandomEpf);
     }
 
     public void applyEstimatedTargetPearlDamage(int currentTick, EntityPlayer target, int pearlEntityId) {
@@ -531,15 +544,36 @@ public class TargetHpTracker {
         return targetProtectionEpf + featherFallingEpf;
     }
 
+    private float calculateDamageAfterProtection(float preArmorDamage, float armorMultiplier, float randomizedProtectionEpf) {
+        float epf = Math.min(randomizedProtectionEpf, 20.0F);
+        float protectionMultiplier = (25.0F - epf) / 25.0F;
+        return preArmorDamage * armorMultiplier * protectionMultiplier;
+    }
+
+    private int getMinRandomizedProtectionEpf(int modifier) {
+        int clampedModifier = Math.min(Math.max(modifier, 0), 20);
+        return (clampedModifier + 1) >> 1;
+    }
+
+    private int getMaxRandomizedProtectionEpf(int modifier) {
+        int clampedModifier = Math.min(Math.max(modifier, 0), 20);
+        return getMinRandomizedProtectionEpf(clampedModifier) + (clampedModifier >> 1);
+    }
+
+    private float getExpectedRandomizedProtectionEpf(int modifier) {
+        int clampedModifier = Math.min(Math.max(modifier, 0), 20);
+        return getMinRandomizedProtectionEpf(clampedModifier) + (clampedModifier >> 1) * 0.5F;
+    }
+
     private int getSwordBaseDamage(String swordType) {
         if ("diamond".equals(swordType)) {
-            return 7;
+            return 8;
         } else if ("iron".equals(swordType)) {
-            return 6;
+            return 7;
         } else if ("stone".equals(swordType)) {
-            return 5;
+            return 6;
         } else if ("gold".equals(swordType) || "wood".equals(swordType)) {
-            return 4;
+            return 5;
         }
 
         return 1;
@@ -574,6 +608,29 @@ public class TargetHpTracker {
         double minHistoryAabbDistanceSq = Double.POSITIVE_INFINITY;
         int minHistoryAabbTick = -1;
         double currentAabbDistanceSq = Double.POSITIVE_INFINITY;
+    }
+
+    public static class SwordDamageEstimate {
+        public final float expectedDamage;
+        public final float minPossibleDamage;
+        public final float maxPossibleDamage;
+        public final float expectedRandomProtectionEpf;
+        public final int minRandomProtectionEpf;
+        public final int maxRandomProtectionEpf;
+
+        SwordDamageEstimate(float expectedDamage,
+                            float minPossibleDamage,
+                            float maxPossibleDamage,
+                            float expectedRandomProtectionEpf,
+                            int minRandomProtectionEpf,
+                            int maxRandomProtectionEpf) {
+            this.expectedDamage = expectedDamage;
+            this.minPossibleDamage = minPossibleDamage;
+            this.maxPossibleDamage = maxPossibleDamage;
+            this.expectedRandomProtectionEpf = expectedRandomProtectionEpf;
+            this.minRandomProtectionEpf = minRandomProtectionEpf;
+            this.maxRandomProtectionEpf = maxRandomProtectionEpf;
+        }
     }
 
     private class TargetHitboxSnapshot {
