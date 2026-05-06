@@ -58,7 +58,8 @@ public class TargetFoodTracker {
         if (currentTargetId == trackedTargetId) return;
 
         trackedTargetId = currentTargetId;
-        targetHunger = DEFAULT_HUNGER;
+        targetHunger = getInitialTargetHunger(target);
+        String targetHungerSource = hasFetchableTargetHunger(target) ? "client_food_stats" : "default";
         targetSaturation = DEFAULT_SATURATION;
         targetExhaustion = DEFAULT_EXHAUSTION;
         foodTimer = 0;
@@ -74,6 +75,7 @@ public class TargetFoodTracker {
         writeEvent("TARGET_FOOD_RESET", detailsBuilder()
                 .field("targetEntityId", currentTargetId < 0 ? null : currentTargetId)
                 .field("targetHunger", currentTargetId < 0 ? null : targetHunger)
+                .field("targetHungerSource", currentTargetId < 0 ? null : targetHungerSource)
                 .field("targetSaturation", currentTargetId < 0 ? null : targetSaturation)
                 .field("targetExhaustion", currentTargetId < 0 ? null : targetExhaustion)
                 .field("tick", currentTick));
@@ -183,6 +185,20 @@ public class TargetFoodTracker {
 
     private void addExhaustion(float exhaustion) {
         targetExhaustion = Math.min(targetExhaustion + exhaustion, MAX_EXHAUSTION);
+    }
+
+    private int getInitialTargetHunger(EntityPlayer target) {
+        if (!hasFetchableTargetHunger(target)) return DEFAULT_HUNGER;
+
+        int foodLevel = target.getFoodStats().getFoodLevel();
+        return foodLevel;
+    }
+
+    private boolean hasFetchableTargetHunger(EntityPlayer target) {
+        if (target == null || target.getFoodStats() == null) return false;
+
+        int foodLevel = target.getFoodStats().getFoodLevel();
+        return foodLevel > 0 && foodLevel <= DEFAULT_HUNGER;
     }
 
     private void applyFoodEaten(EntityPlayer target, ItemStack foodStack, int useTicks, int currentTick) {
