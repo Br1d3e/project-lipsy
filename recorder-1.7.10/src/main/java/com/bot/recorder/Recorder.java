@@ -345,9 +345,8 @@ public class Recorder {
         frame.field("targetEstimatedHpDefault", targetHpTracker.getTargetHpDefault());
         frame.field("targetEstimatedLastDamage", targetExists ? targetHpTracker.getLastEstimatedTargetDamage() : null);
         frame.field("targetEstimatedLastHeal", targetExists ? targetHpTracker.getLastEstimatedTargetHeal() : null);
-        frame.field("targetProtectionLevel", targetExists ? targetHpTracker.getTargetProtectionLevel() : null);
-        frame.field("targetFeatherFallingLevel", targetExists ? targetHpTracker.getTargetFeatherFallingLevel() : null);
         frame.field("targetProtectionEpf", targetExists ? targetHpTracker.getTargetProtectionEpf() : null);
+        frame.field("targetFeatherFallingLevel", targetExists ? targetHpTracker.getTargetFeatherFallingLevel() : null);
         frame.field("targetPearlDamageEpf", targetExists ? targetHpTracker.getTargetPearlDamageEpf() : null);
         frame.field("targetHurtTime", targetExists ? target.hurtTime : null);
         frame.field("targetHurtResistantTime", targetExists ? target.hurtResistantTime : null);

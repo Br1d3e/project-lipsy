@@ -31,7 +31,7 @@ public class TargetHpTracker {
     private static final float CRIT_MULTIPLIER = 1.5F;
     private static final int DEFAULT_SHARPNESS_LEVEL = 4;
     private static final int DEFAULT_TARGET_ARMOR_POINTS = 20;
-    private static final int DEFAULT_TARGET_PROTECTION_LEVEL = 2;
+    private static final int DEFAULT_TARGET_PROTECTION_LEVEL_PER_PIECE = 2;
     private static final int DEFAULT_TARGET_FEATHER_FALLING_LEVEL = 0;
     private static final float PEARL_BASE_DAMAGE_HP = 5.0F;
     private static final float INSTANT_HEALTH_II_BASE_HEAL_HP = 8.0F;
@@ -44,9 +44,8 @@ public class TargetHpTracker {
     private float lastEstimatedTargetHeal = 0.0F;
     private int naturalRegenTimer = 0;
     private int targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
-    private int targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
+    private int targetProtectionEpf;
     private int targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
-    private int targetProtectionEpf = calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
     private final Map<Integer, TrackedPotion> targetPotions = new HashMap<Integer, TrackedPotion>();
     private final Set<Integer> processedTargetPotionEntityIds = new HashSet<Integer>();
 
@@ -63,9 +62,8 @@ public class TargetHpTracker {
         lastEstimatedTargetHeal = 0.0F;
         naturalRegenTimer = 0;
         targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
-        targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
+        targetProtectionEpf = calculateDefaultProtectionEpf();
         targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
-        targetProtectionEpf = calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
     }
@@ -114,16 +112,12 @@ public class TargetHpTracker {
         return naturalRegenTimer;
     }
 
-    public int getTargetProtectionLevel() {
-        return targetProtectionLevel;
+    public int getTargetProtectionEpf() {
+        return targetProtectionEpf;
     }
 
     public int getTargetFeatherFallingLevel() {
         return targetFeatherFallingLevel;
-    }
-
-    public int getTargetProtectionEpf() {
-        return targetProtectionEpf;
     }
 
     public int getTargetPearlDamageEpf() {
@@ -144,7 +138,7 @@ public class TargetHpTracker {
                 .field("baseDamage", baseDamage)
                 .field("sharpnessLevel", sharpnessLevel)
                 .field("targetArmorPoints", targetArmorPoints)
-                .field("targetProtectionLevel", targetProtectionLevel)
+                .field("targetProtectionEpf", targetProtectionEpf)
                 .field("estimatedTargetHp", estimatedTargetHp)
                 .field("tick", currentTick));
     }
@@ -152,7 +146,7 @@ public class TargetHpTracker {
     public float calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel) {
         float preArmorDamage = baseDamage * CRIT_MULTIPLIER + 1.25F * sharpnessLevel;
         float armorMultiplier = (25.0F - targetArmorPoints) / 25.0F;
-        float epf = Math.min(targetProtectionLevel * 4.0F, 20.0F);
+        float epf = Math.min(targetProtectionEpf, 20.0F);
         float protectionMultiplier = (25.0F - epf) / 25.0F;
 
         return preArmorDamage * armorMultiplier * protectionMultiplier;
@@ -356,9 +350,12 @@ public class TargetHpTracker {
                 POTION_DIRECT_HIT_BOX_EXPAND,
                 POTION_DIRECT_HIT_BOX_EXPAND,
                 POTION_DIRECT_HIT_BOX_EXPAND);
-        return impactX >= hitBox.minX && impactX <= hitBox.maxX
-                && impactY >= hitBox.minY && impactY <= hitBox.maxY
-                && impactZ >= hitBox.minZ && impactZ <= hitBox.maxZ;
+
+        AxisAlignedBB potionHitbox = AxisAlignedBB.getBoundingBox(impactX, impactY, impactZ,
+                impactX + 1.0D, impactY + 1.0D, impactZ + 1.0D);
+
+        boolean intersects = hitBox.intersectsWith(potionHitbox);
+        return intersects;
     }
 
     private TrackedPotion findTrackedPotionForImpact(int impactX, int impactY, int impactZ) {
@@ -387,36 +384,14 @@ public class TargetHpTracker {
     private void updateTargetArmorState(EntityPlayer target) {
         if (target == null) {
             targetArmorPoints = DEFAULT_TARGET_ARMOR_POINTS;
-            targetProtectionLevel = DEFAULT_TARGET_PROTECTION_LEVEL;
+            targetProtectionEpf = calculateDefaultProtectionEpf();
             targetFeatherFallingLevel = DEFAULT_TARGET_FEATHER_FALLING_LEVEL;
-            targetProtectionEpf = calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
             return;
         }
 
         targetArmorPoints = getTargetArmor(target);
-        targetProtectionLevel = getProtectionLevel(target);
-        targetFeatherFallingLevel = getFeatherFallingLevel(target);
         targetProtectionEpf = getProtectionEpf(target);
-    }
-
-    private int getProtectionLevel(EntityPlayer target) {
-        if (target == null) return 0;
-
-        int protectionLevel = 0;
-
-        for (int slot = 0; slot < 4; slot++) {
-            ItemStack armor = target.getCurrentArmor(slot);
-
-            if (armor != null) {
-                int prot = EnchantmentHelper.getEnchantmentLevel(
-                        Enchantment.protection.effectId, armor
-                );
-
-                protectionLevel += prot;
-            }
-        }
-
-        return protectionLevel;
+        targetFeatherFallingLevel = getFeatherFallingLevel(target);
     }
 
     private int getFeatherFallingLevel(EntityPlayer target) {
@@ -429,7 +404,7 @@ public class TargetHpTracker {
     }
 
     private int getProtectionEpf(EntityPlayer target) {
-        if (target == null) return calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL);
+        if (target == null) return calculateDefaultProtectionEpf();
 
         int protectionEpf = 0;
 
@@ -448,6 +423,10 @@ public class TargetHpTracker {
         if (protectionLevel <= 0) return 0;
 
         return MathHelper.floor_float(((6.0F + protectionLevel * protectionLevel) / 3.0F) * 0.75F);
+    }
+
+    private int calculateDefaultProtectionEpf() {
+        return calculateProtectionEpf(DEFAULT_TARGET_PROTECTION_LEVEL_PER_PIECE) * 4;
     }
 
     private int calculatePearlDamageEpf() {
