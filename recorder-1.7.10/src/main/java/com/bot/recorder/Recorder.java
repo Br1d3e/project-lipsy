@@ -23,6 +23,8 @@ import net.minecraft.network.play.client.C02PacketUseEntity;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
 import net.minecraft.network.play.client.C09PacketHeldItemChange;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
+import net.minecraft.network.play.server.S13PacketDestroyEntities;
+import net.minecraft.network.play.server.S28PacketEffect;
 import net.minecraft.potion.Potion;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.MathHelper;
@@ -597,7 +599,21 @@ public class Recorder {
 
         if (packet instanceof S12PacketEntityVelocity) {
             handleEntityVelocityPacket((S12PacketEntityVelocity) packet, tick);
+        } else if (packet instanceof S28PacketEffect) {
+            handleEffectPacket((S28PacketEffect) packet, tick);
+        } else if (packet instanceof S13PacketDestroyEntities) {
+            targetHpTracker.handleDestroyedEntities(((S13PacketDestroyEntities) packet).func_149098_c(), tick);
         }
+    }
+
+    private void handleEffectPacket(S28PacketEffect packet, int tick) {
+        targetHpTracker.handlePotionImpactEffect(findClosestPlayer(),
+                packet.getSoundType(),
+                packet.getSoundData(),
+                packet.getPosX(),
+                packet.getPosY(),
+                packet.getPosZ(),
+                tick);
     }
 
     private void handleEntityVelocityPacket(S12PacketEntityVelocity packet, int tick) {

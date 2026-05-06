@@ -160,8 +160,7 @@ public class TargetHpTracker {
                 tracked = new TrackedPotion(potionId, currentTick);
                 targetPotions.put(potionId, tracked);
             }
-            tracked.update(potion.posX, potion.posY, potion.posZ, potion.motionX, potion.motionY, potion.motionZ, potion.ticksExisted);
-            tracked.updateDirectHit(getExpandedTargetHitBox(target), currentTick);
+            tracked.update(potion.posX, potion.posY, potion.posZ, potion.ticksExisted);
         }
 
         Iterator<Map.Entry<Integer, TrackedPotion>> iterator = targetPotions.entrySet().iterator();
@@ -169,9 +168,47 @@ public class TargetHpTracker {
             Map.Entry<Integer, TrackedPotion> entry = iterator.next();
             if (visiblePotionIds.contains(entry.getKey())) continue;
 
-            applyEstimatedTargetPotionHeal(target, entry.getValue(), currentTick);
             processedTargetPotionEntityIds.add(entry.getKey());
             iterator.remove();
+        }
+    }
+
+    public void handlePotionImpactEffect(EntityPlayer target, int effectType, int potionDamage, int packetX, int packetY, int packetZ, int currentTick) {
+        if (target == null || effectType != 2002 || !isInstantHealthIISplashPotion(potionDamage)) return;
+
+        TrackedPotion tracked = findTrackedPotionForImpact(packetX, packetY, packetZ);
+        if (tracked == null) {
+            writeEvent("TARGET_POTION_IMPACT_UNMATCHED", detailsBuilder()
+                    .field("targetEntityId", target.getEntityId())
+                    .field("effectType", effectType)
+                    .field("potionDamage", potionDamage)
+                    .field("impactX", packetX)
+                    .field("impactY", packetY)
+                    .field("impactZ", packetZ)
+                    .field("tick", currentTick));
+            return;
+        }
+
+        tracked.markImpact(packetX, packetY, packetZ, currentTick);
+        applyEstimatedTargetPotionHeal(target, tracked, currentTick);
+        processedTargetPotionEntityIds.add(tracked.entityId);
+        targetPotions.remove(tracked.entityId);
+    }
+
+    public void handleDestroyedEntities(int[] entityIds, int currentTick) {
+        if (entityIds == null) return;
+
+        for (int entityId : entityIds) {
+            TrackedPotion tracked = targetPotions.remove(entityId);
+            if (tracked == null) continue;
+
+            processedTargetPotionEntityIds.add(entityId);
+            writeEvent("TARGET_POTION_DESTROY_NO_IMPACT", detailsBuilder()
+                    .field("potionEntityId", entityId)
+                    .field("lastVisibleX", tracked.lastX)
+                    .field("lastVisibleY", tracked.lastY)
+                    .field("lastVisibleZ", tracked.lastZ)
+                    .field("tick", currentTick));
         }
     }
 
@@ -187,7 +224,10 @@ public class TargetHpTracker {
     }
 
     private boolean isInstantHealthIISplashPotion(EntityPotion potion) {
-        int potionDamage = potion.getPotionDamage();
+        return isInstantHealthIISplashPotion(potion.getPotionDamage());
+    }
+
+    private boolean isInstantHealthIISplashPotion(int potionDamage) {
         if (!ItemPotion.isSplash(potionDamage)) return false;
 
         List effects = Items.potionitem.getEffects(potionDamage);
@@ -206,9 +246,12 @@ public class TargetHpTracker {
     }
 
     public void applyEstimatedTargetPotionHeal(EntityPlayer target, TrackedPotion potion, int currentTick) {
-        double distanceSq = target.getDistanceSq(potion.lastX, potion.lastY, potion.lastZ);
+        double impactX = potion.impactDetected ? potion.impactX : potion.lastX;
+        double impactY = potion.impactDetected ? potion.impactY : potion.lastY;
+        double impactZ = potion.impactDetected ? potion.impactZ : potion.lastZ;
+        double distanceSq = target.getDistanceSq(impactX, impactY, impactZ);
         float effectiveness = 0.0F;
-        boolean directHitEstimated = potion.everDirectHit;
+        boolean directHitEstimated = isImpactCenterInTargetHitBox(target, impactX, impactY, impactZ);
 
         if (directHitEstimated) {
             effectiveness = 1.0F;
@@ -228,37 +271,47 @@ public class TargetHpTracker {
                 .field("healHp", healHp)
                 .field("effectiveness", effectiveness)
                 .field("directHitEstimated", directHitEstimated)
-                .field("firstDirectHitTick", potion.firstDirectHitTick < 0 ? null : potion.firstDirectHitTick)
+                .field("impactDetected", potion.impactDetected)
+                .field("impactTick", potion.impactTick < 0 ? null : potion.impactTick)
                 .field("impactDistanceSq", distanceSq)
-                .field("segmentStartX", potion.previousX)
-                .field("segmentStartY", potion.previousY)
-                .field("segmentStartZ", potion.previousZ)
-                .field("segmentEndX", potion.lastX)
-                .field("segmentEndY", potion.lastY)
-                .field("segmentEndZ", potion.lastZ)
-                .field("predictedSegmentEndX", potion.lastX + potion.motionX)
-                .field("predictedSegmentEndY", potion.lastY + potion.motionY)
-                .field("predictedSegmentEndZ", potion.lastZ + potion.motionZ)
-                .field("motionX", potion.motionX)
-                .field("motionY", potion.motionY)
-                .field("motionZ", potion.motionZ)
-                .field("directHitSegmentStartX", directHitEstimated ? potion.directHitSegmentStartX : null)
-                .field("directHitSegmentStartY", directHitEstimated ? potion.directHitSegmentStartY : null)
-                .field("directHitSegmentStartZ", directHitEstimated ? potion.directHitSegmentStartZ : null)
-                .field("directHitSegmentEndX", directHitEstimated ? potion.directHitSegmentEndX : null)
-                .field("directHitSegmentEndY", directHitEstimated ? potion.directHitSegmentEndY : null)
-                .field("directHitSegmentEndZ", directHitEstimated ? potion.directHitSegmentEndZ : null)
+                .field("impactX", impactX)
+                .field("impactY", impactY)
+                .field("impactZ", impactZ)
+                .field("lastVisibleX", potion.lastX)
+                .field("lastVisibleY", potion.lastY)
+                .field("lastVisibleZ", potion.lastZ)
                 .field("estimatedTargetHp", estimatedTargetHp)
                 .field("tick", currentTick));
     }
 
-    private AxisAlignedBB getExpandedTargetHitBox(EntityPlayer target) {
-        if (target == null || target.boundingBox == null) return null;
+    private boolean isImpactCenterInTargetHitBox(EntityPlayer target, double impactX, double impactY, double impactZ) {
+        if (target == null || target.boundingBox == null) return false;
 
-        return target.boundingBox.expand(
+        AxisAlignedBB hitBox = target.boundingBox.expand(
                 POTION_DIRECT_HIT_BOX_EXPAND,
                 POTION_DIRECT_HIT_BOX_EXPAND,
                 POTION_DIRECT_HIT_BOX_EXPAND);
+        return impactX >= hitBox.minX && impactX <= hitBox.maxX
+                && impactY >= hitBox.minY && impactY <= hitBox.maxY
+                && impactZ >= hitBox.minZ && impactZ <= hitBox.maxZ;
+    }
+
+    private TrackedPotion findTrackedPotionForImpact(int impactX, int impactY, int impactZ) {
+        TrackedPotion best = null;
+        double bestDistanceSq = Double.MAX_VALUE;
+
+        for (TrackedPotion potion : targetPotions.values()) {
+            double dx = potion.lastX - impactX;
+            double dy = potion.lastY - impactY;
+            double dz = potion.lastZ - impactZ;
+            double distanceSq = dx * dx + dy * dy + dz * dz;
+            if (distanceSq < bestDistanceSq) {
+                bestDistanceSq = distanceSq;
+                best = potion;
+            }
+        }
+
+        return bestDistanceSq <= 16.0D ? best : null;
     }
 
 
