@@ -235,14 +235,14 @@ def anchor_dict(session_id, tick, kind, suggested_label, suggested_type=None,
     tick = int(tick)
     return {
         "session": session_id,
-        "tick": tick,
         "start_tick": max(0, int(start_tick)) if start_tick is not None else max(0, tick - start_offset),
         "end_tick": int(end_tick) if end_tick is not None else tick + end_offset,
-        "kind": kind,
         "suggested_label": suggested_label,
         "suggested_type": suggested_type,
         "suggested_reward": suggested_reward,
         "source": source,
+        "_tick": tick,
+        "_kind": kind,
     }
 
 
@@ -250,7 +250,7 @@ def add_anchor(anchors, session_id, tick, kind, suggested_label, suggested_type=
                suggested_reward=None, start_offset=PRE_TICKS, end_offset=POST_TICKS, source=None,
                cooldown=ANCHOR_COOLDOWN_TICKS, start_tick=None, end_tick=None):
     for anchor in anchors:
-        if anchor["kind"] == kind and abs(anchor["tick"] - int(tick)) <= cooldown:
+        if anchor["_kind"] == kind and abs(anchor["_tick"] - int(tick)) <= cooldown:
             return
     anchors.append(anchor_dict(
         session_id=session_id,
@@ -401,11 +401,21 @@ def prepare_frames(frames):
 
 
 def write_anchors(path, anchors):
+    output_fields = [
+        "session",
+        "start_tick",
+        "end_tick",
+        "suggested_label",
+        "suggested_type",
+        "suggested_reward",
+        "source",
+        "id",
+    ]
     with open(path, "w") as f:
-        for i, anchor in enumerate(sorted(anchors, key=lambda a: (a["tick"], a["kind"]))):
+        for i, anchor in enumerate(sorted(anchors, key=lambda a: (a["_tick"], a["_kind"]))):
             anchor = dict(anchor)
             anchor["id"] = "anc_%06d" % i
-            cleaned = {key: clean_value(value) for key, value in anchor.items() if value is not None}
+            cleaned = {key: clean_value(anchor.get(key)) for key in output_fields}
             f.write(json.dumps(cleaned, separators=(",", ":")) + "\n")
 
 
