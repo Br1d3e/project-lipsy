@@ -293,6 +293,7 @@ public class Recorder {
         frame.field("myMoveStrafing", mc.thePlayer.moveStrafing);
         frame.field("mySwingProgress", mc.thePlayer.swingProgress);
         frame.field("myUsingItem", mc.thePlayer.isUsingItem());
+        frame.field("myHeldItem", itemsHandler.getDisplayName(mc.thePlayer.getHeldItem()));
         frame.field("myHeldItemType", itemsHandler.getHeldItemType(mc.thePlayer));
         frame.field("myHasSpeedPotion", itemsHandler.hasPotion(mc.thePlayer, Potion.moveSpeed));
         frame.field("mySpeedDurationTicks", itemsHandler.getPotionDuration(mc.thePlayer, Potion.moveSpeed));
