@@ -11,6 +11,9 @@ PRE_TICKS = 20
 POST_TICKS = 80
 RETREAT_WINDOW_TICKS = 60
 ANCHOR_COOLDOWN_TICKS = 20
+ATTACK_MERGE_GAP_TICKS = 3 * 20
+ATTACK_PRE_TICKS = 10
+ATTACK_POST_TICKS = 30
 
 
 def parse_args():
@@ -25,9 +28,11 @@ def parse_args():
 def read_jsonl(path):
     if not path.exists():
         return pd.DataFrame()
-    if path.suffix == ".gz":
-        return pd.read_json(path, lines=True, compression="gzip")
-    return pd.read_json(path, lines=True)
+    # return pd.read_json(path, lines=True)
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        if path.suffix == ".gz":
+            return pd.read_json(path, lines=True, compression="gzip")
+        return pd.read_json(f, lines=True)
 
 
 def find_frames_path(session_dir):
@@ -223,6 +228,72 @@ def first_tick_between(ticks, start_tick, end_tick):
     return None
 
 
+def interrupt_intervals(anchors):
+    intervals = []
+    for anchor in anchors:
+        if anchor.get("suggested_label") not in ("heal", "pearl", "retreat"):
+            continue
+        start_tick = anchor.get("start_tick")
+        end_tick = anchor.get("end_tick")
+        if start_tick is None or end_tick is None:
+            continue
+        intervals.append((int(start_tick), int(end_tick)))
+    return sorted(intervals)
+
+
+def overlaps_interval(start_tick, end_tick, intervals):
+    return any(start_tick <= interval_end and end_tick >= interval_start for interval_start, interval_end in intervals)
+
+
+def tick_in_intervals(tick, intervals):
+    return any(interval_start <= tick <= interval_end for interval_start, interval_end in intervals)
+
+
+def merge_attack_ticks(ticks, max_gap, intervals):
+    ticks = [tick for tick in sorted(set(int(tick) for tick in ticks)) if not tick_in_intervals(tick, intervals)]
+    if not ticks:
+        return []
+
+    groups = []
+    start = ticks[0]
+    end = ticks[0]
+    members = [ticks[0]]
+
+    for tick in ticks[1:]:
+        blocked_between = overlaps_interval(end, tick, intervals)
+        if tick - end <= max_gap and not blocked_between:
+            end = tick
+            members.append(tick)
+        else:
+            groups.append({"start": start, "end": end, "members": members})
+            start = tick
+            end = tick
+            members = [tick]
+
+    groups.append({"start": start, "end": end, "members": members})
+    return groups
+
+
+def trim_interval_to_avoid_interrupts(start_tick, end_tick, anchor_tick, intervals):
+    start_tick = int(start_tick)
+    end_tick = int(end_tick)
+    anchor_tick = int(anchor_tick)
+
+    for interval_start, interval_end in intervals:
+        if interval_end < start_tick or interval_start > end_tick:
+            continue
+        if interval_end < anchor_tick:
+            start_tick = max(start_tick, interval_end + 1)
+        elif interval_start > anchor_tick:
+            end_tick = min(end_tick, interval_start - 1)
+        else:
+            return None
+
+    if start_tick > end_tick:
+        return None
+    return start_tick, end_tick
+
+
 def target_using_item_between(frames, start_tick, end_tick):
     tick_name = tick_col(frames)
     window = frames[(frames[tick_name] >= start_tick) & (frames[tick_name] <= end_tick)]
@@ -282,6 +353,17 @@ def generate_healing_anchors(frames, events, session_id, anchors):
             end_tick=segment["end_tick"],
             cooldown=0,
         )
+    my_hp = frames["myHp"]
+    for idx in my_hp.index:
+        if idx > 0 and my_hp.loc[idx] - my_hp.loc[idx - 1] > 2:
+            tick = frames[tick_col(frames)].loc[idx]
+            add_anchor(
+                anchors, session_id, tick, "heal_candidate", "heal",
+                source="health_burst",
+                start_tick= tick - 5,
+                end_tick= tick + 5,
+                cooldown=0,
+            )
 
 
 def generate_pearl_anchors(frames, events, session_id, anchors):
@@ -375,13 +457,24 @@ def generate_attack_anchors(frames, events, session_id, anchors):
         swing_start = (swing > 0) & (swing.shift(1, fill_value=0) <= 0)
         attack_ticks.update(int(t) for t in frames.loc[swing_start, tick_name].tolist())
 
-    for tick in sorted(attack_ticks):
+    intervals = interrupt_intervals(anchors)
+    for group in merge_attack_ticks(attack_ticks, ATTACK_MERGE_GAP_TICKS, intervals):
+        tick = group["start"]
+        trimmed = trim_interval_to_avoid_interrupts(
+            max(0, group["start"] - ATTACK_PRE_TICKS),
+            group["end"] + ATTACK_POST_TICKS,
+            tick,
+            intervals,
+        )
+        if trimmed is None:
+            continue
+        start_tick, end_tick = trimmed
         add_anchor(
             anchors, session_id, tick, "attack_candidate", "attack",
-            source="attack_packet_damage_or_swing",
-            start_offset=10,
-            end_offset=30,
-            cooldown=10,
+            source="merged_attack_packet_damage_or_swing",
+            start_tick=start_tick,
+            end_tick=end_tick,
+            cooldown=0,
         )
 
 
