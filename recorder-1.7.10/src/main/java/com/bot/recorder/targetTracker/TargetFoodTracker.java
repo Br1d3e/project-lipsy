@@ -213,18 +213,18 @@ public class TargetFoodTracker {
         targetHunger = Math.min(targetHunger + healAmount, DEFAULT_HUNGER);
         targetSaturation = Math.min(targetSaturation + (float) healAmount * saturationModifier * 2.0F, (float) targetHunger);
 
-        writeEvent("TARGET_FOOD_EAT", detailsBuilder()
-                .field("targetEntityId", target.getEntityId())
-                .field("itemType", foodStack.getItem().getUnlocalizedName())
-                .field("displayName", foodStack.getDisplayName())
-                .field("useTicks", useTicks)
-                .field("hungerAdded", healAmount)
-                .field("saturationModifier", saturationModifier)
-                .field("targetHungerBefore", hungerBefore)
-                .field("targetHunger", targetHunger)
-                .field("targetSaturationBefore", saturationBefore)
-                .field("targetSaturation", targetSaturation)
-                .field("tick", currentTick));
+//        writeEvent("TARGET_FOOD_EAT", detailsBuilder()
+//                .field("targetEntityId", target.getEntityId())
+//                .field("itemType", foodStack.getItem().getUnlocalizedName())
+//                .field("displayName", foodStack.getDisplayName())
+//                .field("useTicks", useTicks)
+//                .field("hungerAdded", healAmount)
+//                .field("saturationModifier", saturationModifier)
+//                .field("targetHungerBefore", hungerBefore)
+//                .field("targetHunger", targetHunger)
+//                .field("targetSaturationBefore", saturationBefore)
+//                .field("targetSaturation", targetSaturation)
+//                .field("tick", currentTick));
     }
 
     private void rememberTargetPosition(EntityPlayer target) {

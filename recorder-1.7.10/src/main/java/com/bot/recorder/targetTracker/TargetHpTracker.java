@@ -140,22 +140,22 @@ public class TargetHpTracker {
         estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
         lastEstimatedTargetDamage = damage;
         lastEstimatedTargetHeal = 0.0F;
-        writeEvent("TARGET_ESTIMATED_DAMAGE", detailsBuilder()
-                .field("targetEntityId", trackedTargetId < 0 ? null : trackedTargetId)
-                .field("damageHp", damage)
-                .field("baseDamage", baseDamage)
-                .field("sharpnessLevel", sharpnessLevel)
-                .field("criticalHit", criticalHit)
-                .field("critMultiplier", criticalHit ? CRIT_MULTIPLIER : 1.0F)
-                .field("targetArmorPoints", targetArmorPoints)
-                .field("targetProtectionEpf", targetProtectionEpf)
-                .field("expectedRandomProtectionEpf", damageEstimate.expectedRandomProtectionEpf)
-                .field("minRandomProtectionEpf", damageEstimate.minRandomProtectionEpf)
-                .field("maxRandomProtectionEpf", damageEstimate.maxRandomProtectionEpf)
-                .field("minPossibleDamageHp", damageEstimate.minPossibleDamage)
-                .field("maxPossibleDamageHp", damageEstimate.maxPossibleDamage)
-                .field("estimatedTargetHp", estimatedTargetHp)
-                .field("tick", currentTick));
+//        writeEvent("TARGET_ESTIMATED_DAMAGE", detailsBuilder()
+//                .field("targetEntityId", trackedTargetId < 0 ? null : trackedTargetId)
+//                .field("damageHp", damage)
+//                .field("baseDamage", baseDamage)
+//                .field("sharpnessLevel", sharpnessLevel)
+//                .field("criticalHit", criticalHit)
+//                .field("critMultiplier", criticalHit ? CRIT_MULTIPLIER : 1.0F)
+//                .field("targetArmorPoints", targetArmorPoints)
+//                .field("targetProtectionEpf", targetProtectionEpf)
+//                .field("expectedRandomProtectionEpf", damageEstimate.expectedRandomProtectionEpf)
+//                .field("minRandomProtectionEpf", damageEstimate.minRandomProtectionEpf)
+//                .field("maxRandomProtectionEpf", damageEstimate.maxRandomProtectionEpf)
+//                .field("minPossibleDamageHp", damageEstimate.minPossibleDamage)
+//                .field("maxPossibleDamageHp", damageEstimate.maxPossibleDamage)
+//                .field("estimatedTargetHp", estimatedTargetHp)
+//                .field("tick", currentTick));
     }
 
     public SwordDamageEstimate calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel, boolean criticalHit) {
@@ -182,14 +182,14 @@ public class TargetHpTracker {
         estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
         lastEstimatedTargetDamage = damage;
         lastEstimatedTargetHeal = 0.0F;
-        writeEvent("TARGET_ESTIMATED_PEARL_DAMAGE", detailsBuilder()
-                .field("targetEntityId", target == null ? null : target.getEntityId())
-                .field("pearlEntityId", pearlEntityId)
-                .field("damageHp", damage)
-                .field("targetProtectionEpf", targetProtectionEpf)
-                .field("totalEpf", totalEpf)
-                .field("estimatedTargetHp", estimatedTargetHp)
-                .field("tick", currentTick));
+//        writeEvent("TARGET_ESTIMATED_PEARL_DAMAGE", detailsBuilder()
+//                .field("targetEntityId", target == null ? null : target.getEntityId())
+//                .field("pearlEntityId", pearlEntityId)
+//                .field("damageHp", damage)
+//                .field("targetProtectionEpf", targetProtectionEpf)
+//                .field("totalEpf", totalEpf)
+//                .field("estimatedTargetHp", estimatedTargetHp)
+//                .field("tick", currentTick));
     }
 
     public float calculateEstimatedPearlDamage(int totalEpf) {
@@ -205,12 +205,12 @@ public class TargetHpTracker {
                 lastEstimatedTargetHeal = NATURAL_REGEN_HEAL_HP;
                 lastEstimatedTargetDamage = 0.0F;
                 naturalRegenTimer = 0;
-                writeEvent("TARGET_ESTIMATED_NATURAL_REGEN", detailsBuilder()
-                        .field("targetEntityId", trackedTargetId < 0 ? null : trackedTargetId)
-                        .field("healHp", NATURAL_REGEN_HEAL_HP)
-                        .field("estimatedTargetHp", estimatedTargetHp)
-                        .field("targetFoodLevel", targetFoodLevel)
-                        .field("tick", currentTick));
+//                writeEvent("TARGET_ESTIMATED_NATURAL_REGEN", detailsBuilder()
+//                        .field("targetEntityId", trackedTargetId < 0 ? null : trackedTargetId)
+//                        .field("healHp", NATURAL_REGEN_HEAL_HP)
+//                        .field("estimatedTargetHp", estimatedTargetHp)
+//                        .field("targetFoodLevel", targetFoodLevel)
+//                        .field("tick", currentTick));
                 return true;
             }
         } else {
