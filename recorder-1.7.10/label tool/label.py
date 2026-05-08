@@ -32,9 +32,11 @@ EDITABLE_FIELDS = [
 def read_jsonl(path):
     if not path.exists():
         return pd.DataFrame()
-    if path.suffix == ".gz":
-        return pd.read_json(path, lines=True, compression="gzip")
-    return pd.read_json(path, lines=True)
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        if path.suffix == ".gz":
+            return pd.read_json(path, lines=True, compression="gzip")
+        return pd.read_json(f, lines=True)
+
 
 
 def find_frames_path(session_dir):
@@ -179,6 +181,7 @@ def navigation_menu():
     i - insert label
     e - edit label
     d - delete label
+    m - merge labels
     v - view labels
     f - find labels
     s - save labels
@@ -400,6 +403,84 @@ def delete_labels(labels):
     print("Deleted %d label(s)." % len(label_ids))
 
 
+def merge_text_values(values):
+    parts = []
+    for value in values:
+        value = clean_value(value)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts) if parts else None
+
+
+def choose_label_value(values):
+    unique_values = []
+    for value in values:
+        value = clean_value(value)
+        if value is None:
+            continue
+        if value not in unique_values:
+            unique_values.append(value)
+
+    if not unique_values:
+        return None
+    if len(unique_values) == 1:
+        return unique_values[0]
+
+    while True:
+        print("Labels differ. Choose label to keep:")
+        for idx, value in enumerate(unique_values, start=1):
+            print("%d - %s" % (idx, value))
+        value = input("label choice, or r to return: ").strip().lower()
+        if value == "r":
+            return "r"
+        if value.isdigit() and 1 <= int(value) <= len(unique_values):
+            return unique_values[int(value) - 1]
+        print("Invalid choice.")
+
+
+def merge_labels(labels, session_id):
+    label_ids = select_labels(labels)
+    if len(label_ids) < 2:
+        print("Select at least two labels to merge.")
+        return
+
+    label_ids = sorted(set(label_ids), key=label_sort_key)
+    print_labels(labels, label_ids)
+    selected = [labels[label_id] for label_id in label_ids]
+    merged_label = choose_label_value([label.get("label") for label in selected])
+    if merged_label == "r":
+        return
+
+    start_ticks = [int(label["start_tick"]) for label in selected if label.get("start_tick") is not None]
+    end_ticks = [int(label["end_tick"]) for label in selected if label.get("end_tick") is not None]
+    if not start_ticks or not end_ticks:
+        print("Cannot merge labels with missing start_tick/end_tick.")
+        return
+
+    keep_id = label_ids[0]
+    source = merge_text_values(label.get("source") for label in selected)
+    merged = normalize_label({
+        "id": keep_id,
+        "session": selected[0].get("session") or session_id,
+        "start_tick": min(start_ticks),
+        "end_tick": max(end_ticks),
+        "label": merged_label,
+        "type": merge_text_values(label.get("type") for label in selected),
+        "reward": merge_text_values(label.get("reward") for label in selected),
+        "source": "merged: " + source if source is not None else None,
+        "notes": merge_text_values(label.get("notes") for label in selected),
+    }, session_id)
+
+    for label_id in label_ids:
+        labels.pop(label_id, None)
+    labels[keep_id] = merged
+    print("Merged %d labels into %s." % (len(label_ids), keep_id))
+    print_labels(labels, [keep_id])
+
+
 def main():
     session_dir = Path(input("Enter folder directory: ")).expanduser()
     meta_path = session_dir / "session_meta.json"
@@ -433,6 +514,8 @@ def main():
             edit_labels(labels, session_id)
         elif op == "d":
             delete_labels(labels)
+        elif op == "m":
+            merge_labels(labels, session_id)
         elif op == "v":
             view_labels(labels)
         elif op == "f":
