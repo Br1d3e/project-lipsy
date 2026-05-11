@@ -49,6 +49,8 @@ FIELD_ALIASES = {
     "source": "source",
 }
 
+cursor_id = 0
+
 
 def read_jsonl(path):
     if not path.exists():
@@ -244,6 +246,9 @@ def navigation_menu():
     m - merge labels
     v - view labels
     f - find labels
+    g <tick> - set cursor tick
+    n - move cursor to next label start_tick
+    p - move cursor to previous label start_tick
     s - save labels
     r - return to prev menu
     q - save and quit
@@ -404,12 +409,17 @@ def insert_label(labels, session_id, instructions=None):
     print("Inserted label %s." % label_id)
 
 
-def view_labels(labels, instructions=None):
+def view_labels(labels, instructions=None, cursor_tick=None):
     if not labels:
         print("No labels.")
         return
     if instructions is not None and len(instructions) >= 2:
         print_labels(labels, select_labels(labels, op=instructions[1]))
+        return
+    if cursor_tick is not None:
+        label_ids = labels_around_cursor(labels, cursor_tick, radius=3)
+        print("cursor_tick=%s" % cursor_tick)
+        print_labels(labels, label_ids)
         return
     print(labels_to_dataframe(labels, drop_session=True).to_string(index=False))
 
@@ -550,9 +560,11 @@ def select_labels(labels, op=None):
     print("Unknown find option.")
 
 
-def edit_labels(labels, session_id, instructions=None):
+def edit_labels(labels, session_id, instructions=None, current_tick=None):
     if instructions is None or instructions == []:
-        label_ids = select_labels(labels)
+        label_ids = select_labels(labels, op="@%s" % current_tick) if current_tick is not None else []
+        if not label_ids:
+            label_ids = select_labels(labels)
         if not label_ids:
             return
         print_labels(labels, label_ids)
@@ -595,9 +607,11 @@ def edit_labels(labels, session_id, instructions=None):
         print_labels(labels, label_ids)
 
 
-def delete_labels(labels, instructions=None):
+def delete_labels(labels, instructions=None, current_tick=None):
     if instructions is None or instructions == []:
-        label_ids = select_labels(labels)
+        label_ids = select_labels(labels, op="@%s" % current_tick) if current_tick is not None else []
+        if not label_ids:
+            label_ids = select_labels(labels)
     else:
         label_ids = select_labels(labels, op=instructions[1])
     if not label_ids:
@@ -704,6 +718,81 @@ def merge_labels(labels, session_id, instructions=None):
     print_labels(labels, [keep_id])
 
 
+def sorted_label_ids_by_start(labels):
+    return sorted(
+        labels.keys(),
+        key=lambda label_id: (
+            int(labels[label_id].get("start_tick")) if labels[label_id].get("start_tick") is not None else 10 ** 12,
+            label_sort_key(label_id),
+        )
+    )
+
+
+def labels_around_cursor(labels, cursor_tick, radius=3):
+    sorted_ids = sorted_label_ids_by_start(labels)
+    if not sorted_ids:
+        return []
+
+    active_ids = [
+        label_id for label_id in sorted_ids
+        if labels[label_id].get("start_tick") is not None
+        and labels[label_id].get("end_tick") is not None
+        and int(labels[label_id]["start_tick"]) <= cursor_tick <= int(labels[label_id]["end_tick"])
+    ]
+
+    insert_at = len(sorted_ids)
+    for idx, label_id in enumerate(sorted_ids):
+        start_tick = labels[label_id].get("start_tick")
+        if start_tick is not None and int(start_tick) >= cursor_tick:
+            insert_at = idx
+            break
+
+    start_idx = max(0, insert_at - radius)
+    end_idx = min(len(sorted_ids), insert_at + radius + 1)
+    neighborhood_ids = sorted_ids[start_idx:end_idx]
+    selected_ids = set(active_ids + neighborhood_ids)
+    return [label_id for label_id in sorted_ids if label_id in selected_ids]
+
+
+def cursor_goto(instructions, current_tick=None):
+    if instructions is None or len(instructions) < 2:
+        value = prompt_value("cursor tick", default=current_tick, cast=int)
+        if value == "r":
+            return current_tick
+        return value
+    try:
+        return int(instructions[1])
+    except (TypeError, ValueError):
+        print("Invalid cursor tick.")
+        return current_tick
+
+
+def cursor_next_label(labels, cursor_tick):
+    sorted_ids = sorted_label_ids_by_start(labels)
+    for label_id in sorted_ids:
+        start_tick = labels[label_id].get("start_tick")
+        if start_tick is not None and int(start_tick) > cursor_tick:
+            return int(start_tick)
+    print("No next label.")
+    return cursor_tick
+
+
+def cursor_previous_label(labels, cursor_tick):
+    sorted_ids = sorted_label_ids_by_start(labels)
+    previous_tick = None
+    for label_id in sorted_ids:
+        start_tick = labels[label_id].get("start_tick")
+        if start_tick is None:
+            continue
+        start_tick = int(start_tick)
+        if start_tick >= cursor_tick:
+            break
+        previous_tick = start_tick
+    if previous_tick is None:
+        print("No previous label.")
+        return cursor_tick
+    return previous_tick
+
 def main():
     session_dir = Path(input("Enter folder directory: ")).expanduser()
     meta_path = session_dir / "session_meta.json"
@@ -726,9 +815,9 @@ def main():
         anchors = read_anchors(anchors_path)
         load_labels_from_anchors(labels, anchors, session_id)
 
+    current_tick = 0
     print(navigation_menu())
     while True:
-        # op = input("> ").strip().lower()
         cmd = input("> ").strip().lower()
         if cmd == "":
             continue
@@ -739,15 +828,26 @@ def main():
         elif op == "i":
             insert_label(labels, session_id, instructions)
         elif op == "e":
-            edit_labels(labels, session_id, instructions)
+            edit_labels(labels, session_id, instructions, current_tick)
         elif op == "d":
-            delete_labels(labels, instructions)
+            delete_labels(labels, instructions, current_tick)
         elif op == "m":
             merge_labels(labels, session_id, instructions)
         elif op == "v":
-            view_labels(labels, instructions)
+            view_labels(labels, instructions, current_tick)
         elif op == "f":
             find_labels(labels, instructions)
+        elif op == "g":
+            current_tick = cursor_goto(instructions, current_tick)
+            print("cursor_tick=%s" % current_tick)
+        elif op == "n":
+            current_tick = cursor_next_label(labels, current_tick)
+            print("cursor_tick=%s" % current_tick)
+            view_labels(labels, [], current_tick)
+        elif op == "p":
+            current_tick = cursor_previous_label(labels, current_tick)
+            print("cursor_tick=%s" % current_tick)
+            view_labels(labels, [], current_tick)
         elif op == "s":
             save_labels(labels_path, labels)
         elif op == "q":
