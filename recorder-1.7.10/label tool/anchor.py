@@ -302,7 +302,7 @@ def target_using_item_between(frames, start_tick, end_tick):
 
 def anchor_dict(session_id, tick, kind, suggested_label, suggested_type=None,
                 suggested_reward=None, start_offset=PRE_TICKS, end_offset=POST_TICKS,
-                source=None, start_tick=None, end_tick=None):
+                source=None, start_tick=None, end_tick=None, review_policy="review"):
     tick = int(tick)
     return {
         "session": session_id,
@@ -312,6 +312,7 @@ def anchor_dict(session_id, tick, kind, suggested_label, suggested_type=None,
         "suggested_type": suggested_type,
         "suggested_reward": suggested_reward,
         "source": source,
+        "review_policy": review_policy,
         "_tick": tick,
         "_kind": kind,
     }
@@ -319,7 +320,7 @@ def anchor_dict(session_id, tick, kind, suggested_label, suggested_type=None,
 
 def add_anchor(anchors, session_id, tick, kind, suggested_label, suggested_type=None,
                suggested_reward=None, start_offset=PRE_TICKS, end_offset=POST_TICKS, source=None,
-               cooldown=ANCHOR_COOLDOWN_TICKS, start_tick=None, end_tick=None):
+               cooldown=ANCHOR_COOLDOWN_TICKS, start_tick=None, end_tick=None, review_policy="review"):
     for anchor in anchors:
         if anchor["_kind"] == kind and abs(anchor["_tick"] - int(tick)) <= cooldown:
             return
@@ -335,6 +336,7 @@ def add_anchor(anchors, session_id, tick, kind, suggested_label, suggested_type=
         source=source,
         start_tick=start_tick,
         end_tick=end_tick,
+        review_policy=review_policy,
     ))
 
 
@@ -351,18 +353,23 @@ def generate_healing_anchors(frames, events, session_id, anchors):
             source="held_potion_segment_use",
             start_tick=segment["start_tick"],
             end_tick=segment["end_tick"],
+            suggested_reward=1,
             cooldown=0,
+            review_policy="review",
         )
     my_hp = frames["myHp"]
     for idx in my_hp.index:
-        if idx > 0 and my_hp.loc[idx] - my_hp.loc[idx - 1] > 2:
+        regen = my_hp.loc[idx] - my_hp.loc[idx - 1] if idx > 0 else 0
+        if regen > 2:
             tick = frames[tick_col(frames)].loc[idx]
             add_anchor(
                 anchors, session_id, tick, "heal_candidate", "heal",
                 source="health_burst",
                 start_tick= tick - 5,
                 end_tick= tick + 5,
+                suggested_reward=1 if regen >= 6 else 0,
                 cooldown=0,
+                review_policy="review",
             )
 
 
@@ -403,7 +410,9 @@ def generate_pearl_anchors(frames, events, session_id, anchors):
             source="held_pearl_segment_use",
             start_tick=start_tick,
             end_tick=end_tick,
+            suggested_reward=1,
             cooldown=0,
+            review_policy="review",
         )
 
 
@@ -435,6 +444,7 @@ def generate_retreat_anchors(frames, session_id, anchors):
             start_offset=20,
             end_offset=RETREAT_WINDOW_TICKS,
             cooldown=RETREAT_WINDOW_TICKS,
+            review_policy="review",
         )
         last_added = tick
 
@@ -475,6 +485,7 @@ def generate_attack_anchors(frames, events, session_id, anchors):
             start_tick=start_tick,
             end_tick=end_tick,
             cooldown=0,
+            review_policy="auto",
         )
 
 
@@ -502,6 +513,7 @@ def write_anchors(path, anchors):
         "suggested_type",
         "suggested_reward",
         "source",
+        "review_policy",
         "id",
     ]
     with open(path, "w") as f:

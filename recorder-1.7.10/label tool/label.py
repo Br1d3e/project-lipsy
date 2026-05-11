@@ -51,6 +51,29 @@ FIELD_ALIASES = {
 
 cursor_id = 0
 
+REVIEW_PRESETS = {
+    "pearl": {
+        "1": ("tryhard", 1),
+        "2": ("tryhard", 0),
+        "3": ("tryhard", -1),
+        "4": ("agro", 1),
+        "5": ("retreat", 1),
+        "6": ("side", 1),
+    },
+    "heal": {
+        "1": ("fast", 1),
+        "2": ("turn", 1),
+        "3": ("front", 1),
+        "4": ("miss", -1),
+    },
+    "retreat": {
+        "1": ("turn", 1),
+        "2": ("jump", 1),
+        "3": ("s", 1),
+        "4": ("failed_retreat", -1),
+    },
+}
+
 
 def read_jsonl(path):
     if not path.exists():
@@ -160,10 +183,53 @@ def unique_label_ids(label_ids):
 def next_label_id(labels):
     max_id = 0
     for label_id in labels.keys():
-        digits = "".join(ch for ch in str(label_id) if ch.isdigit())
+        text = str(label_id)
+        if text.startswith("auto_"):
+            continue
+        digits = "".join(ch for ch in text if ch.isdigit())
         if digits:
             max_id = max(max_id, int(digits))
-    return "lbl_%06d" % (max_id + 1)
+    return "lb_%05d" % (max_id + 1)
+
+
+def next_auto_label_id(labels):
+    max_id = 0
+    for label_id in labels.keys():
+        text = str(label_id)
+        if not text.startswith("auto_"):
+            continue
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if digits:
+            max_id = max(max_id, int(digits))
+    return "auto_%05d" % (max_id + 1)
+
+
+def anchor_source(anchor):
+    anchor_id = clean_value(anchor.get("id"))
+    source = clean_value(anchor.get("source"))
+    if anchor_id is None:
+        return "anchor" if source is None else "anchor:%s" % source
+    return "anchor:%s" % anchor_id if source is None else "anchor:%s:%s" % (anchor_id, source)
+
+
+def label_from_anchor(anchor, session_id, label_id):
+    return normalize_label({
+        "id": label_id,
+        "session": anchor.get("session") or session_id,
+        "start_tick": anchor.get("start_tick"),
+        "end_tick": anchor.get("end_tick"),
+        "label": anchor.get("suggested_label"),
+        "type": anchor.get("suggested_type"),
+        "reward": anchor.get("suggested_reward"),
+        "source": anchor_source(anchor),
+        "reason": None,
+        "failure_reason": None,
+    }, session_id)
+
+
+def anchor_id_from_source(source):
+    parts = str(source or "").split(":")
+    return parts[1] if len(parts) >= 2 and parts[0] == "anchor" else None
 
 
 def read_anchors(path):
@@ -175,31 +241,41 @@ def read_anchors(path):
     return anchors
 
 
-def load_labels(path, session_id):
+def load_label_state(path, session_id):
     if not path.exists():
-        return {}
+        return {}, []
     with open(path, "r") as f:
         raw = json.load(f)
 
     if isinstance(raw, dict):
-        if "labels" in raw and isinstance(raw["labels"], list):
-            rows = raw["labels"]
+        if any(key in raw for key in ("labels", "auto_labels", "rejected_anchors")):
+            rows = raw.get("labels", [])
+            auto_rows = raw.get("auto_labels", [])
+            rejected_rows = raw.get("rejected_anchors", [])
         else:
             rows = list(raw.values())
+            auto_rows = []
+            rejected_rows = []
     elif isinstance(raw, list):
         rows = raw
+        auto_rows = []
+        rejected_rows = []
     else:
         rows = []
+        auto_rows = []
+        rejected_rows = []
 
     labels = {}
-    for row in rows:
+    for row in list(rows) + list(auto_rows):
         if not isinstance(row, dict):
             continue
         label = normalize_label(row, session_id)
-        label_id = label.get("id") or next_label_id(labels)
+        label_id = label.get("id")
+        if not label_id:
+            label_id = next_auto_label_id(labels) if str(label.get("source") or "").startswith("anchor:") else next_label_id(labels)
         label["id"] = label_id
         labels[label_id] = label
-    return labels
+    return labels, [row for row in rejected_rows if isinstance(row, dict)]
 
 
 def save_labels(path, labels):
@@ -235,6 +311,35 @@ def load_labels_from_anchors(labels, anchors, session_id):
     print("Loaded %d anchors as suggested labels." % len(anchors))
 
 
+def split_anchors(anchors, session_id, labels, rejected_anchors):
+    review_queue = []
+    if anchors.empty:
+        return review_queue
+
+    accepted_anchor_ids = set()
+    for label in labels.values():
+        anchor_id = anchor_id_from_source(label.get("source"))
+        if anchor_id:
+            accepted_anchor_ids.add(anchor_id)
+    rejected_anchor_ids = {str(anchor.get("id")) for anchor in rejected_anchors if anchor.get("id") is not None}
+
+    for _, anchor_row in anchors.iterrows():
+        anchor = {key: clean_value(value) for key, value in anchor_row.to_dict().items()}
+        anchor_id = str(anchor.get("id")) if anchor.get("id") is not None else None
+        if anchor_id is not None and (anchor_id in accepted_anchor_ids or anchor_id in rejected_anchor_ids):
+            continue
+
+        policy = anchor.get("review_policy") or "review"
+        if policy == "ignore":
+            continue
+        if policy == "auto":
+            label_id = next_auto_label_id(labels)
+            labels[label_id] = label_from_anchor(anchor, session_id, label_id)
+        else:
+            review_queue.append(anchor)
+    return review_queue
+
+
 def navigation_menu():
     return """
     ---------------------------------
@@ -244,6 +349,7 @@ def navigation_menu():
     e - edit label
     d - delete label
     m - merge labels
+    review - review queued anchors
     v - view labels
     f - find labels
     g <tick> - set cursor tick
@@ -793,6 +899,231 @@ def cursor_previous_label(labels, cursor_tick):
         return cursor_tick
     return previous_tick
 
+
+def print_summary(total_anchors, review_queue, rejected_anchors, labels):
+    auto_count = sum(1 for label_id in labels.keys() if str(label_id).startswith("auto_"))
+    manual_count = len(labels) - auto_count
+    print("Summary:")
+    print("  total anchors: %d" % total_anchors)
+    print("  auto accepted: %d" % auto_count)
+    print("  review required: %d" % len(review_queue))
+    print("  rejected: %d" % len(rejected_anchors))
+    print("  final manual labels: %d" % manual_count)
+    print("  total labels: %d" % len(labels))
+
+
+def print_review_item(anchor, index, total, status=None):
+    print("\nReview %d/%d" % (index + 1, total))
+    if status is not None:
+        print("status: %s" % status)
+    preferred_fields = [
+        "id",
+        "review_policy",
+        "session",
+        "start_tick",
+        "end_tick",
+        "suggested_label",
+        "suggested_type",
+        "suggested_reward",
+        "source",
+    ]
+    row = {}
+    for field in preferred_fields:
+        if field in anchor:
+            row[field] = clean_value(anchor.get(field))
+    for field, value in anchor.items():
+        if field not in row:
+            row[field] = clean_value(value)
+    print(pd.DataFrame([row]).to_string(index=False))
+    label = anchor.get("suggested_label")
+    presets = REVIEW_PRESETS.get(label, {})
+    if presets:
+        print("Presets:")
+        for key, (label_type, reward) in sorted(presets.items()):
+            print("  %s: %s %+g" % (key, label_type, reward))
+    print("Enter=accept, x=reject, number=preset, e=manual edit, n/p=next/prev, r=return")
+
+
+def find_review_label_id(labels, anchor):
+    anchor_id = clean_value(anchor.get("id"))
+    expected_source = anchor_source(anchor)
+    for label_id, label in labels.items():
+        source = label.get("source")
+        if source == expected_source:
+            return label_id
+        if anchor_id is not None and anchor_id_from_source(source) == str(anchor_id):
+            return label_id
+    return None
+
+
+def remove_rejected_anchor(rejected_anchors, anchor):
+    target_key = review_anchor_key(anchor)
+    for idx in range(len(rejected_anchors) - 1, -1, -1):
+        if review_anchor_key(rejected_anchors[idx]) == target_key:
+            rejected_anchors.pop(idx)
+
+
+def review_anchor_status(labels, rejected_anchors, pending_keys, anchor):
+    anchor_key = review_anchor_key(anchor)
+    if find_review_label_id(labels, anchor) is not None:
+        return "accepted"
+    if any(review_anchor_key(rejected_anchor) == anchor_key for rejected_anchor in rejected_anchors):
+        return "rejected"
+    if anchor_key in pending_keys:
+        return "pending"
+    return "reviewed"
+
+
+def accept_review_anchor(labels, session_id, anchor, rejected_anchors, label_type=None, reward=None):
+    label_id = find_review_label_id(labels, anchor) or next_label_id(labels)
+    label = label_from_anchor(anchor, session_id, label_id)
+    if label_type is not None:
+        label["type"] = label_type
+    if reward is not None:
+        label["reward"] = reward
+    labels[label_id] = label
+    remove_rejected_anchor(rejected_anchors, anchor)
+    return label_id
+
+
+def manual_review_label(labels, session_id, anchor, rejected_anchors):
+    existing_id = find_review_label_id(labels, anchor)
+    existing = labels.get(existing_id, {}) if existing_id is not None else {}
+    print("Manual review edit. Empty keeps suggested value; r returns.")
+    label = prompt_value("label", default=existing.get("label") or anchor.get("suggested_label"), cast=str)
+    if label == "r":
+        return None
+    label_type = prompt_value("type", default=existing.get("type") or anchor.get("suggested_type"), cast=str, allow_empty=True)
+    if label_type == "r":
+        return None
+    reward = prompt_value("reward", default=existing.get("reward") if existing.get("reward") is not None else anchor.get("suggested_reward"), cast=parse_reward, allow_empty=True)
+    if reward == "r":
+        return None
+    reason = prompt_value("reason", default=existing.get("reason"), cast=str, allow_empty=True)
+    if reason == "r":
+        return None
+    failure_reason = prompt_value("failure_reason", default=existing.get("failure_reason"), cast=str, allow_empty=True)
+    if failure_reason == "r":
+        return None
+
+    label_id = existing_id or next_label_id(labels)
+    labels[label_id] = normalize_label({
+        "id": label_id,
+        "session": anchor.get("session") or session_id,
+        "start_tick": anchor.get("start_tick"),
+        "end_tick": anchor.get("end_tick"),
+        "label": label,
+        "type": label_type,
+        "reward": reward,
+        "source": anchor_source(anchor),
+        "reason": reason,
+        "failure_reason": failure_reason,
+    }, session_id)
+    remove_rejected_anchor(rejected_anchors, anchor)
+    return label_id
+
+
+def review_anchor_key(anchor):
+    anchor_id = clean_value(anchor.get("id"))
+    if anchor_id is not None:
+        return "id:%s" % anchor_id
+    return "span:%s:%s:%s:%s" % (
+        clean_value(anchor.get("session")),
+        clean_value(anchor.get("start_tick")),
+        clean_value(anchor.get("end_tick")),
+        clean_value(anchor.get("source")),
+    )
+
+
+def remove_review_anchor(review_queue, anchor):
+    target_key = review_anchor_key(anchor)
+    for idx, queued_anchor in enumerate(review_queue):
+        if review_anchor_key(queued_anchor) == target_key:
+            review_queue.pop(idx)
+            return
+
+
+def next_pending_review_index(review_items, pending_keys, start_index):
+    if not pending_keys:
+        return None
+    for idx in range(start_index, len(review_items)):
+        if review_anchor_key(review_items[idx]) in pending_keys:
+            return idx
+    for idx in range(0, min(start_index, len(review_items))):
+        if review_anchor_key(review_items[idx]) in pending_keys:
+            return idx
+    return None
+
+
+def review_mode(labels, session_id, review_queue, rejected_anchors):
+    if not review_queue:
+        print("No review anchors.")
+        return
+
+    index = 0
+    review_items = list(review_queue)
+    pending_keys = {review_anchor_key(anchor) for anchor in review_queue}
+    while review_items:
+        index = max(0, min(index, len(review_items) - 1))
+        anchor = review_items[index]
+        anchor_key = review_anchor_key(anchor)
+        print_review_item(anchor, index, len(review_items), review_anchor_status(labels, rejected_anchors, pending_keys, anchor))
+        op = input("review> ").strip().lower()
+
+        if op == "r":
+            return
+        if op == "p":
+            index = max(0, index - 1)
+            continue
+        if op == "n":
+            index = min(len(review_items) - 1, index + 1)
+            continue
+        if op == "x":
+            existing_id = find_review_label_id(labels, anchor)
+            if existing_id is not None:
+                labels.pop(existing_id, None)
+            remove_rejected_anchor(rejected_anchors, anchor)
+            rejected_anchors.append(anchor)
+            pending_keys.discard(anchor_key)
+            remove_review_anchor(review_queue, anchor)
+            next_index = next_pending_review_index(review_items, pending_keys, index + 1)
+            if next_index is not None:
+                index = next_index
+            continue
+        if op == "e":
+            label_id = manual_review_label(labels, session_id, anchor, rejected_anchors)
+            if label_id is not None:
+                print("Accepted review anchor as %s." % label_id)
+                pending_keys.discard(anchor_key)
+                remove_review_anchor(review_queue, anchor)
+                next_index = next_pending_review_index(review_items, pending_keys, index + 1)
+                if next_index is not None:
+                    index = next_index
+            continue
+
+        label = anchor.get("suggested_label")
+        presets = REVIEW_PRESETS.get(label, {})
+        if op in presets:
+            label_type, reward = presets[op]
+            label_id = accept_review_anchor(labels, session_id, anchor, rejected_anchors, label_type, reward)
+            print("Accepted review anchor as %s." % label_id)
+            pending_keys.discard(anchor_key)
+            remove_review_anchor(review_queue, anchor)
+            next_index = next_pending_review_index(review_items, pending_keys, index + 1)
+            if next_index is not None:
+                index = next_index
+            continue
+        if op == "":
+            label_id = accept_review_anchor(labels, session_id, anchor, rejected_anchors)
+            print("Accepted review anchor as %s." % label_id)
+            pending_keys.discard(anchor_key)
+            remove_review_anchor(review_queue, anchor)
+            next_index = next_pending_review_index(review_items, pending_keys, index + 1)
+            if next_index is not None:
+                index = next_index
+            continue
+        print("Unknown review command.")
+
 def main():
     session_dir = Path(input("Enter folder directory: ")).expanduser()
     meta_path = session_dir / "session_meta.json"
@@ -808,12 +1139,13 @@ def main():
     read_jsonl(frames_path)
 
     session_id = meta.get("sessionId") or meta.get("session_id") or session_dir.name
-    labels = load_labels(labels_path, session_id)
+    labels, rejected_anchors = load_label_state(labels_path, session_id)
+    anchors = read_anchors(anchors_path)
+    review_queue = split_anchors(anchors, session_id, labels, rejected_anchors)
+    total_anchors = len(anchors) if not anchors.empty else 0
     if labels:
         print("Loaded %d labels from %s." % (len(labels), labels_path))
-    else:
-        anchors = read_anchors(anchors_path)
-        load_labels_from_anchors(labels, anchors, session_id)
+    print_summary(total_anchors, review_queue, rejected_anchors, labels)
 
     current_tick = 0
     print(navigation_menu())
@@ -823,7 +1155,10 @@ def main():
             continue
         instructions = parse_instructions(cmd)
         op = cmd[0]
-        if op == "r":
+        if cmd == "review":
+            review_mode(labels, session_id, review_queue, rejected_anchors)
+            print_summary(total_anchors, review_queue, rejected_anchors, labels)
+        elif op == "r":
             print(navigation_menu())
         elif op == "i":
             insert_label(labels, session_id, instructions)
@@ -850,8 +1185,10 @@ def main():
             view_labels(labels, [], current_tick)
         elif op == "s":
             save_labels(labels_path, labels)
+            print_summary(total_anchors, review_queue, rejected_anchors, labels)
         elif op == "q":
             save_labels(labels_path, labels)
+            print_summary(total_anchors, review_queue, rejected_anchors, labels)
             return
         elif op == "h" or op == "help":
             print(navigation_menu())
