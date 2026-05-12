@@ -45,6 +45,7 @@ test/recordings/
 recorder-1.7.10/recordings
 *.hprof
 *.pth
+*.pkl
 *.mp4
 *.mov
 *.avi

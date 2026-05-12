@@ -2,140 +2,38 @@ import json
 import os
 import pickle
 
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+from models.window_dataset import WindowDataset
+from models.aim.aim_datasets import AimDataset
+
 import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from matplotlib import pyplot as plt
 
 
-SEQ_LEN = 20
-BATCH_SIZE = 32
-EPOCHS = 200
+SEQ_LEN = 5
+BATCH_SIZE = 128
+EPOCHS = 100
 LEARNING_RATE = 1e-3
+LOSS_TYPE = "huber"
+HUBER_BETA = 2.0
+YAW_WEIGHT = 2.0
+PITCH_WEIGHT = 1
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/test/recordings/aim"
+# FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/"
 
-AXIS_CONFIG = {
-    "yaw": {
-        "key": "yawDiffPrev",
-        "min": -50.0,
-        "max": 50.0,
-        "model_path": os.path.join(BASE_DIR, "aim_yaw_model.pth"),
-        "scaler_path": os.path.join(BASE_DIR, "aim_yaw_scalers.pkl"),
-    },
-    "pitch": {
-        "key": "PitchDiffPrev",
-        "min": -20.0,
-        "max": 10.0,
-        "model_path": os.path.join(BASE_DIR, "aim_pitch_model.pth"),
-        "scaler_path": os.path.join(BASE_DIR, "aim_pitch_scalers.pkl"),
-    },
-}
+models_dir = os.path.join(BASE_DIR, "models/aim")
 
-
-class AimDataset(Dataset):
-    def __init__(self, folder, axis, seq_len=SEQ_LEN, scaler_x=None, scaler_y=None, fit_scalers=True):
-        if axis not in AXIS_CONFIG:
-            raise ValueError("axis must be 'yaw' or 'pitch'")
-
-        self.axis = axis
-        self.seq_len = seq_len
-        self.samples = []
-        self.scaler_x = scaler_x
-        self.scaler_y = scaler_y
-
-        config = AXIS_CONFIG[axis]
-        file_features, file_targets, file_valid = self._load_files(folder, config)
-
-        if fit_scalers:
-            valid_features = [features[valid] for features, valid in zip(file_features, file_valid) if np.any(valid)]
-            valid_targets = [targets[valid] for targets, valid in zip(file_targets, file_valid) if np.any(valid)]
-            if not valid_features or not valid_targets:
-                raise ValueError(f"No valid {axis} samples found in {folder}")
-
-            self.scaler_x = StandardScaler().fit(np.vstack(valid_features))
-            self.scaler_y = StandardScaler().fit(np.vstack(valid_targets))
-
-        self._build_sequences(file_features, file_targets, file_valid)
-        print(f"[Aim-{axis} Dataset] Loaded {len(self.samples)} sequences from {folder}")
-
-    def _load_files(self, folder, config):
-        file_features, file_targets, file_valid = [], [], []
-
-        for file_name in sorted(os.listdir(folder)):
-            if not file_name.endswith(".json"):
-                continue
-
-            path = os.path.join(folder, file_name)
-            with open(path, "r") as f:
-                data = json.load(f)
-
-            data = sorted(data, key=lambda d: d["time"])
-            if len(data) <= self.seq_len:
-                continue
-
-            features = np.array([
-                [d["dx"], d["dy"], d["dz"], d["dist"],
-                 d[config["key"]], d["targetVelX"], d["targetVelY"], d["targetVelZ"]]
-                for d in data[:-1]
-            ], dtype=np.float32)
-
-            targets = np.array([
-                [data[i + 1][config["key"]]]
-                for i in range(len(data) - 1)
-            ], dtype=np.float32)
-
-            valid = np.array([
-                config["min"] <= data[i][config["key"]] <= config["max"]
-                and config["min"] <= data[i + 1][config["key"]] <= config["max"]
-                for i in range(len(data) - 1)
-            ], dtype=bool)
-
-            file_features.append(features)
-            file_targets.append(targets)
-            file_valid.append(valid)
-
-        return file_features, file_targets, file_valid
-
-    def _build_sequences(self, file_features, file_targets, file_valid):
-        for features, targets, valid in zip(file_features, file_targets, file_valid):
-            if self.scaler_x is not None and self.scaler_y is not None:
-                features = self.scaler_x.transform(features)
-                targets = self.scaler_y.transform(targets)
-
-            for start in range(len(features) - self.seq_len + 1):
-                end = start + self.seq_len
-                target_idx = end - 1
-                if not np.all(valid[start:end]):
-                    continue
-
-                x_seq = features[start:end]
-                y_seq = targets[target_idx]
-                self.samples.append((x_seq, y_seq))
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        x, y = self.samples[idx]
-        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
-
-
-class AimYawDataset(AimDataset):
-    def __init__(self, folder, seq_len=SEQ_LEN, scaler_x=None, scaler_y=None, fit_scalers=True):
-        super().__init__(folder, "yaw", seq_len, scaler_x, scaler_y, fit_scalers)
-
-
-class AimPitchDataset(AimDataset):
-    def __init__(self, folder, seq_len=SEQ_LEN, scaler_x=None, scaler_y=None, fit_scalers=True):
-        super().__init__(folder, "pitch", seq_len, scaler_x, scaler_y, fit_scalers)
 
 
 class AimLSTM(nn.Module):
-    def __init__(self, input_dim=8, hidden_dim=128, num_layers=2, output_dim=2):
+    def __init__(self, input_dim=20, hidden_dim=128, num_layers=2, output_dim=2):
         super().__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
         self.fc = nn.Sequential(
@@ -148,6 +46,53 @@ class AimLSTM(nn.Module):
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
 
+class AimGRU(nn.Module):
+    def __init__(self, input_dim=20, hidden_dim=32, num_layers=1, output_dim=2):
+        super().__init__()
+        self.gru = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.fc = nn.Sequential(
+            # nn.Linear(hidden_dim, 32),
+            # nn.ReLU(),
+            nn.Linear(32, output_dim),
+        )
+
+    def forward(self, x):
+        out, _ = self.gru(x)
+        return self.fc(out[:, -1, :])
+
+class AimSimpleMLP(nn.Module):
+    def __init__(self, input_dim=20, output_dim=2):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, output_dim),
+        )
+
+    def forward(self, x):
+        if x.dim() > 2:
+            x = x.flatten(start_dim=1)
+        return self.layers(x)
+
+class AimStackedMLP(nn.Module):
+    def __init__(self, input_dim=20, output_dim=2):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, 192),
+            nn.ReLU(),
+            nn.Linear(192, 96),
+            nn.ReLU(),
+            nn.Linear(96, 48),
+            nn.ReLU(),
+            nn.Linear(48, output_dim),
+        )
+
+    def forward(self, x):
+        if x.dim() > 2:
+            x = x.flatten(start_dim=1)
+        return self.layers(x)
 
 def get_device():
     if torch.cuda.is_available():
@@ -165,15 +110,69 @@ def save_scalers(dataset, path):
         }, f)
 
 
-def train(model, dataloader, save_path, epochs=EPOCHS, lr=LEARNING_RATE):
+def make_train_criterion():
+    if LOSS_TYPE == "mse":
+        return nn.MSELoss(reduction="none")
+    if LOSS_TYPE == "huber":
+        return nn.SmoothL1Loss(beta=HUBER_BETA, reduction="none")
+    raise ValueError("LOSS_TYPE must be 'mse' or 'huber'")
+
+
+def weighted_aim_loss(pred, target, criterion):
+    loss_by_axis = criterion(pred, target)
+    yaw_loss = loss_by_axis[:, 0].mean()
+    pitch_loss = loss_by_axis[:, 1].mean()
+    return (YAW_WEIGHT * yaw_loss + PITCH_WEIGHT * pitch_loss)
+
+
+def print_target_clamp_suggestions(dataset):
+    targets = torch.stack(dataset.Y).numpy()
+    yaw = targets[:, 0]
+    pitch = targets[:, 1]
+    print("Suggested inference clamps from train targets:")
+    print(f"  yawStep p1={np.percentile(yaw, 1):.6f} p99={np.percentile(yaw, 99):.6f}")
+    print(f"  pitchStep p1={np.percentile(pitch, 1):.6f} p99={np.percentile(pitch, 99):.6f}")
+
+
+def print_distribution_stats(name, values):
+    print(
+        f"{name}: "
+        f"mean={np.mean(values):.6f} "
+        f"std={np.std(values):.6f} "
+        f"p50={np.percentile(values, 50):.6f} "
+        f"p90={np.percentile(values, 90):.6f} "
+        f"p95={np.percentile(values, 95):.6f} "
+        f"p99={np.percentile(values, 99):.6f} "
+        f"min={np.min(values):.6f} "
+        f"max={np.max(values):.6f}"
+    )
+
+
+def save_model_checkpoint(model, save_path, checkpoint_meta=None):
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+    }
+    if checkpoint_meta:
+        checkpoint.update(checkpoint_meta)
+    torch.save(checkpoint, save_path)
+
+
+def train(model, dataloader, val_loader, save_path, checkpoint_meta=None,
+          epochs=EPOCHS, lr=LEARNING_RATE, patience=25):
     device = get_device()
     model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.7, patience=10)
-    criterion = nn.MSELoss()
+    criterion = make_train_criterion()
 
+    best_loss = 1e9
+    best_epoch = -1
+    best_state_dict = None
+    loss_count = 0
+    epochs_run = 0
     for epoch in range(epochs):
+        epochs_run = epoch + 1
         total_loss = 0.0
         model.train()
 
@@ -181,33 +180,180 @@ def train(model, dataloader, save_path, epochs=EPOCHS, lr=LEARNING_RATE):
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
             pred = model(xb)
-            loss = criterion(pred, yb)
+            loss = weighted_aim_loss(pred, yb, criterion)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             total_loss += loss.item()
 
         avg_loss = total_loss / len(dataloader)
-        scheduler.step(avg_loss)
-        print(f"Epoch {epoch + 1}/{epochs} | Loss: {avg_loss:.6f}")
+        # print(f"Epoch {epoch + 1}/{epochs} | Loss: {avg_loss:.6f}")
 
-    torch.save(model.state_dict(), save_path)
-    print(f"Model saved to {save_path}")
+        val_loss = eval_model(model, val_loader)
+        scheduler.step(val_loss)
+
+        print(
+            f"Epoch {epoch + 1}/{epochs} | "
+            f"Train Loss: {avg_loss:.6f} | "
+            f"Val Loss: {val_loss:.6f} | "
+            f"Val RMSE: {np.sqrt(val_loss):.6f}"
+        )
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_epoch = epoch + 1
+            best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            save_model_checkpoint(model, save_path, checkpoint_meta)
+            loss_count = 0
+            print("model saved")
+        else:
+            loss_count += 1
+
+        if loss_count > patience:
+            break
+
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+    return {
+        "best_val_loss": best_loss,
+        "best_epoch": best_epoch,
+        "epochs_run": epochs_run,
+    }
 
 
-def train_axis(axis):
-    config = AXIS_CONFIG[axis]
-    use_scalers = False
-    dataset = AimDataset(FOLDER, axis=axis, seq_len=SEQ_LEN, fit_scalers=use_scalers)
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-    model = AimLSTM(input_dim=8, output_dim=1)
+def eval_model(model, dataloader, graph=False, diagnostics=False):
+    device = get_device()
+    model.to(device)
+    model.eval()
 
-    train(model, loader, save_path=config["model_path"])
-    if use_scalers:
-        save_scalers(dataset, config["scaler_path"])
-        print(f"Scalers saved to {config['scaler_path']}")
+    total_loss = 0.0
+    yaw_loss = 0.0
+    pitch_loss = 0.0
+    total_count = 0
+    criterion = nn.MSELoss(reduction="sum")
+
+    Y_true = []
+    Y_pred = []
+
+    with torch.no_grad():
+        for x, y in dataloader:
+            x, y = x.to(device), y.to(device)
+            pred = model(x)
+            Y_true.append(y.cpu().numpy())
+            Y_pred.append(pred.cpu().numpy())
+
+            batch_yaw_loss = criterion(pred[:, 0], y[:, 0]).item()
+            batch_pitch_loss = criterion(pred[:, 1], y[:, 1]).item()
+            yaw_loss += batch_yaw_loss
+            pitch_loss += batch_pitch_loss
+            total_loss += batch_yaw_loss + batch_pitch_loss
+            total_count += y.numel()
+
+    avg_loss = total_loss / total_count
+    print(f"Eval Loss: {avg_loss:.6f}")
+    print(f"RMSE: {np.sqrt(avg_loss):.6f}")
+    sample_count = total_count / 2
+    print(f"Yaw RMSE: {np.sqrt(yaw_loss / sample_count):.6f}")
+    print(f"Pitch RMSE: {np.sqrt(pitch_loss / sample_count):.6f}")
+
+    Y_true = np.concatenate(Y_true, axis=0)
+    Y_pred = np.concatenate(Y_pred, axis=0)
+    if diagnostics or graph:
+        print_distribution_stats("yaw_true", Y_true[:, 0])
+        print_distribution_stats("yaw_pred", Y_pred[:, 0])
+        print_distribution_stats("pitch_true", Y_true[:, 1])
+        print_distribution_stats("pitch_pred", Y_pred[:, 1])
+    if graph:
+        yaw_true = Y_true[:, 0]
+        yaw_pred = Y_pred[:, 0]
+        yaw_error = yaw_pred - yaw_true
+        pitch_true = Y_true[:, 1]
+        pitch_pred = Y_pred[:, 1]
+        pitch_error = pitch_pred - pitch_true
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(yaw_true, label="yaw true", linewidth=1)
+        plt.plot(yaw_pred, label="yaw pred", linewidth=1, alpha=0.8)
+        # plt.plot(yaw_error, label="yaw pred - true", linewidth=1, alpha=0.75)
+        plt.title("Aim Yaw Eval")
+        plt.xlabel("sample")
+        plt.ylabel("delta yaw")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+        plt.plot(pitch_true, label="pitch_true", linewidth=1)
+        plt.plot(pitch_pred, label="pitch_pred", linewidth=1, alpha=0.8)
+        # plt.plot(pitch_error, label="pitch_error", linewidth=1, alpha=0.75)
+        plt.title("Aim Pitch Eval")
+        plt.xlabel("sample")
+        plt.ylabel("delta pitch")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    return avg_loss
 
 
 if __name__ == "__main__":
-    train_axis("yaw")
-    train_axis("pitch")
+    aim_dataset = AimDataset()
+    train_windows = aim_dataset.get_train_windows(seq_len=SEQ_LEN)
+    train_dataset = WindowDataset(train_windows)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    if len(train_dataset) == 0:
+        raise ValueError("No training windows found.")
+    print_target_clamp_suggestions(train_dataset)
+
+    val_windows = aim_dataset.get_val_windows(seq_len=SEQ_LEN)
+    val_dataset = WindowDataset(val_windows)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    sample_x = train_dataset[0][0]
+    input_dim = sample_x.numel()
+    model_name = "stacked MLP 12"
+    architecture = f"{input_dim} -> 192 -> 96 -> 48 -> 2"
+    # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
+    # model = AimSimpleMLP(input_dim=sample_x.numel())
+    model = AimStackedMLP(input_dim=input_dim, output_dim=2)
+    # model = AimLSTM(input_dim=sample_x.shape[-1], output_dim=2)
+    # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
+
+    model_path = os.path.join(BASE_DIR, "aim_stacked_mlp_12.pth")
+    checkpoint_meta = {
+        "model_class": type(model).__name__,
+        "model_name": model_name,
+        "input_dim": input_dim,
+        "output_dim": 2,
+        "architecture": architecture,
+        "seq_len": SEQ_LEN,
+    }
+    train_info = train(
+        model=model,
+        dataloader=train_loader,
+        val_loader=val_loader,
+        save_path=model_path,
+        checkpoint_meta=checkpoint_meta,
+    )
+    print(
+        f"Training complete: "
+        f"best_epoch={train_info['best_epoch']} "
+        f"epochs_run={train_info['epochs_run']} "
+        f"best_val_loss={train_info['best_val_loss']:.6f} "
+        f"best_val_rmse={np.sqrt(train_info['best_val_loss']):.6f}"
+    )
+
+    eval_model(model=model, dataloader=val_loader, graph=True)
+    print(f"Config: \n"
+          f"  model: {model_name}\n"
+          f"  input_dim: {input_dim}\n"
+          f"  architecture: {architecture}\n"
+          f"  seq_len: {SEQ_LEN}\n"
+          f"  batch_size: {BATCH_SIZE}\n"
+          f"  learning_rate: {LEARNING_RATE}\n"
+          f"  epochs: {EPOCHS}\n"
+          f"  loss_type: {LOSS_TYPE}\n"
+          f"  huber_beta: {HUBER_BETA}\n"
+          f"  yaw_weight: {YAW_WEIGHT}\n"
+          f"  pitch_weight: {PITCH_WEIGHT}\n"
+          f"  best_epoch: {train_info['best_epoch']}\n"
+          f"  best_val_loss: {train_info['best_val_loss']:.6f}\n"
+          f"  best_val_rmse: {np.sqrt(train_info['best_val_loss']):.6f}\n")

@@ -1,5 +1,5 @@
 import os
-import pickle
+import sys
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
@@ -8,22 +8,58 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from train_aim_model import AXIS_CONFIG, BASE_DIR, AimDataset, AimLSTM, BATCH_SIZE, FOLDER, SEQ_LEN, get_device
+try:
+    from train_aim_model import (
+        AimGRU,
+        AimLSTM,
+        AimSimpleMLP,
+        AimStackedMLP,
+        BATCH_SIZE,
+        SEQ_LEN,
+        get_device,
+    )
+except ModuleNotFoundError:
+    from models.aim.train_aim_model import (
+        AimGRU,
+        AimLSTM,
+        AimSimpleMLP,
+        AimStackedMLP,
+        BATCH_SIZE,
+        SEQ_LEN,
+        get_device,
+    )
+from models.window_dataset import WindowDataset
+from models.aim.aim_datasets import AimDataset
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "aim_stacked_mlp_11.pth")
 
-PLOT_DIR = os.path.join(BASE_DIR, "eval_plots")
-SHOW_PLOTS = os.environ.get("SHOW_PLOTS") == "1"
-
-
-def load_scalers(path):
-    with open(path, "rb") as f:
-        scalers = pickle.load(f)
-    return scalers["scaler_x"], scalers["scaler_y"]
+MODEL_CLASSES = {
+    "AimSimpleMLP": AimSimpleMLP,
+    "AimStackedMLP": AimStackedMLP,
+    "AimLSTM": AimLSTM,
+    "AimGRU": AimGRU,
+}
 
 
 def load_model(path, device):
-    model = AimLSTM(input_dim=8, output_dim=1)
-    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=False))
+    # Backward compatibility for old checkpoints saved with torch.save(model)
+    # while train_aim_model.py was running as __main__.
+    main_module = sys.modules.get("__main__")
+    if main_module is not None:
+        for name, model_class in MODEL_CLASSES.items():
+            setattr(main_module, name, model_class)
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model_class = MODEL_CLASSES[checkpoint.get("model_class", "AimStackedMLP")]
+        model = model_class(
+            input_dim=checkpoint["input_dim"],
+            output_dim=checkpoint.get("output_dim", 2),
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        model = checkpoint
     model.to(device)
     model.eval()
     return model
@@ -32,7 +68,7 @@ def load_model(path, device):
 def collect_predictions(model, loader, device):
     y_true_all, y_pred_all = [], []
 
-    with torch.no_grad():
+    with (torch.no_grad()):
         for xb, yb in loader:
             pred = model(xb.to(device))
             y_pred_all.append(pred.cpu().numpy())
@@ -44,14 +80,13 @@ def collect_predictions(model, loader, device):
 def finish_plot(path):
     plt.tight_layout()
     plt.savefig(path, dpi=150)
-    if SHOW_PLOTS:
-        plt.show()
+    # if SHOW_PLOTS:
+    plt.show()
     plt.close()
 
 
 def plot_axis(axis, y_true, y_pred):
     label = "yawDiff" if axis == "yaw" else "pitchDiff"
-    os.makedirs(PLOT_DIR, exist_ok=True)
 
     plt.figure(figsize=(8, 6))
     plt.scatter(y_true, y_pred, s=5, alpha=0.5)
@@ -70,51 +105,77 @@ def plot_axis(axis, y_true, y_pred):
     plt.legend()
     plt.show()
 
+def print_axis_metrics(axis, y_true_axis, y_pred_axis, mask=None, name="all"):
+    if mask is not None:
+        y_true_axis = y_true_axis[mask]
+        y_pred_axis = y_pred_axis[mask]
+
+    if len(y_true_axis) == 0:
+        print(f"{axis} | {name} | samples=0")
+        return
+
+    abs_err = np.abs(y_true_axis - y_pred_axis)
+
+    mae = np.mean(abs_err)
+    rmse = np.sqrt(np.mean((y_pred_axis - y_true_axis) ** 2))
+
+    print(
+        f"{axis} | {name} | samples={len(y_true_axis)} | "
+        f"MAE={mae:.4f} | RMSE={rmse:.4f} | "
+        f"median AE={np.median(abs_err):.4f} | "
+        f"p90 AE={np.percentile(abs_err, 90):.4f} | "
+        f"p95 AE={np.percentile(abs_err, 95):.4f} | "
+        f"p99 AE={np.percentile(abs_err, 99):.4f} | "
+        f"max AE={np.max(abs_err):.4f}"
+    )
 
 def evaluate_axis(axis):
-    config = AXIS_CONFIG[axis]
-    model_path = config["model_path"]
-    scaler_path = config["scaler_path"]
-
+    axis_idx = 0 if axis == "yaw" else 1
+    model_path = MODEL_PATH
     if not os.path.exists(model_path):
         print(f"Skipping {axis}: missing model file {model_path}")
         return
-    if not os.path.exists(scaler_path):
-        print(f"Skipping {axis}: missing scaler file {scaler_path}")
-        return
 
-    use_scaler = True
-    if use_scaler:
-        scaler_x, scaler_y = load_scalers(scaler_path)
-        dataset = AimDataset(
-            FOLDER,
-            axis=axis,
-            seq_len=SEQ_LEN,
-            scaler_x=scaler_x,
-            scaler_y=scaler_y,
-            fit_scalers=False,
-        )
-    else:
-        dataset = AimDataset(
-            FOLDER,
-            axis=axis,
-            seq_len=SEQ_LEN,
-            fit_scalers=False,
-        )
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
+    aim_dataset = AimDataset()
+    test_windows = aim_dataset.get_test_windows(seq_len=SEQ_LEN)
+    test_dataset = WindowDataset(test_windows)
+    loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     device = get_device()
     model = load_model(model_path, device)
     y_true, y_pred = collect_predictions(model, loader, device)
-    if use_scaler:
-        y_true = scaler_y.inverse_transform(y_true).reshape(-1)
-        y_pred = scaler_y.inverse_transform(y_pred).reshape(-1)
+    y_true_axis = y_true[:, axis_idx]
+    y_pred_axis = y_pred[:, axis_idx]
 
-    mae = np.mean(np.abs(y_pred - y_true))
-    rmse = np.sqrt(np.mean((y_pred - y_true) ** 2))
-    print(f"{axis} | samples={len(dataset)} | MAE={mae:.4f} | RMSE={rmse:.4f}")
+    # absolute_err = np.abs(y_true_axis - y_pred_axis)
+    # target_err = np.sort(absolute_err, axis=None)[-20:]
+    # # for i in range(len(absolute_err)):
+    # #     if absolute_err[i] in target_err:
+    # #         print(f"axis: {axis}\n"
+    # #               f"index: {i} \n"
+    # #               f"y_true: {y_true_axis[i]} \n"
+    # #               f"y_pred: {y_pred_axis[i]} \n"
+    # #               f"err: {absolute_err[i]}")
+    #
+    # mae = np.mean(absolute_err)
+    # rmse = np.sqrt(np.mean((y_pred_axis - y_true_axis) ** 2))
+    # print(f"{axis} | samples={len(test_dataset)} | MAE={mae:.4f} | RMSE={rmse:.4f} | "
+    #       f"median absolute err={np.median(absolute_err):.4f} | "
+    #       f"p90 ae={np.percentile(absolute_err, 90)} | "
+    #       f"p95 ae={np.percentile(absolute_err, 95)} | "
+    #       f"p99 ae={np.percentile(absolute_err, 99)}")
 
-    plot_axis(axis, y_true, y_pred)
+    yaw_true = y_true[:, 0]
+    pitch_true = y_true[:, 1]
+
+    normal_mask = (np.abs(yaw_true) <= 20.0) & (np.abs(pitch_true) <= 10.0)
+    flick_mask = ~normal_mask
+
+    print_axis_metrics(axis, y_true_axis, y_pred_axis, name="all")
+    print_axis_metrics(axis, y_true_axis, y_pred_axis, mask=normal_mask, name="normal")
+    print_axis_metrics(axis, y_true_axis, y_pred_axis, mask=flick_mask, name="flick/discontinuity")
+
+    plot_axis(axis, y_true_axis, y_pred_axis)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ class WindowDataset(Dataset):
         self.Y = [torch.tensor(y, dtype=torch.float32) for x, y in self.windows]
 
     def __len__(self):
-        return len(self.windows)
+        return len(self.X)
 
     def __getitem__(self, i):
         return self.X[i], self.Y[i]
