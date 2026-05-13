@@ -7,6 +7,19 @@ import net.minecraft.util.MathHelper;
 public class Aiming {
     private final Minecraft mc;
     double lastMsgMs = System.currentTimeMillis();
+    String lastMode = "";
+    private boolean modelLocked = false;
+    private int recoverTicksLeft = 0;
+
+    private static final float SENSITIVITY = 1.25F;
+
+    private static final float MODEL_ENTER_YAW = 30.0F;
+    private static final float MODEL_EXIT_YAW = 60.0F;
+    private static final float MODEL_ENTER_PITCH = 20.0F;
+    private static final float MODEL_EXIT_PITCH = 30.0F;
+
+    private static final double MODEL_MIN_DISTANCE = 1.0;
+    private static final int MIN_RECOVER_TICKS = 4;
     public Aiming(Minecraft mc) { this.mc = mc; }
 
     public void update(Entity target, float[] actions) {
@@ -27,29 +40,64 @@ public class Aiming {
         float yawDiff = MathHelper.wrapAngleTo180_float(yaw - mc.thePlayer.rotationYaw);
         float pitchDiff = pitch - mc.thePlayer.rotationPitch;
 
-        if (actions == null || actions.length < 2 || Math.abs(yawDiff) > 50.0F || pitchDiff < -20.0F || pitchDiff > 10.0F) {
-            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 90f));
+        boolean hasModel = actions != null && actions.length == 2;
+
+        boolean forceRecover =
+                !hasModel
+                        || distance < MODEL_MIN_DISTANCE
+                        || Math.abs(yawDiff) > MODEL_EXIT_YAW
+                        || Math.abs(pitchDiff) > MODEL_EXIT_PITCH;
+
+        boolean canEnterModel =
+                hasModel
+                        && distance >= MODEL_MIN_DISTANCE
+                        && Math.abs(yawDiff) < MODEL_ENTER_YAW
+                        && Math.abs(pitchDiff) < MODEL_ENTER_PITCH;
+
+        if (forceRecover) {
+            modelLocked = false;
+            recoverTicksLeft = MIN_RECOVER_TICKS;
+        }
+
+        if (!modelLocked) {
+            if (recoverTicksLeft > 0) {
+                recoverTicksLeft--;
+            } else if (canEnterModel) {
+                modelLocked = true;
+            }
+        }
+
+        // Recovery mode
+        if (!modelLocked) {
+            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 70f));
             mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, pitch, 30f));
 
-            if (System.currentTimeMillis() - lastMsgMs >= 250) {
+//            if (System.currentTimeMillis() - lastMsgMs >= 250) {
+            if (!lastMode.equals("w/o")) {
                 String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
                         " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
                 mc.thePlayer.sendChatMessage(testMsg);
                 lastMsgMs = System.currentTimeMillis();
+                lastMode = "w/o";
             }
 
+        // aim with model
         } else {
-            float nextYawDiff = actions[0];
-            float nextPitchDiff = actions[1];
-            float desiredYaw = mc.thePlayer.rotationYaw + yawDiff - nextYawDiff;
-            float desiredPitch = mc.thePlayer.rotationPitch + pitchDiff - nextPitchDiff;
+            float predictedDeltaYaw = actions[0] * SENSITIVITY;
+            float predictedDeltaPitch = actions[1];
+            predictedDeltaYaw = clampFloat(predictedDeltaYaw, -30F, 30F);
+            predictedDeltaPitch = clampFloat(predictedDeltaPitch, -15F, 15F);
+            float desiredYaw = mc.thePlayer.rotationYaw + predictedDeltaYaw;
+            float desiredPitch = mc.thePlayer.rotationPitch + predictedDeltaPitch;
 
-            if (System.currentTimeMillis() - lastMsgMs >= 250) {
+//            if (System.currentTimeMillis() - lastMsgMs >= 250) {
+            if (!lastMode.equals("/w")) {
                 String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
                         + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
-                        + " nextYawDiff: " + nextYawDiff + " nextPitchDiff: " + nextPitchDiff;
+                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
                 mc.thePlayer.sendChatMessage(testMsg);
                 lastMsgMs = System.currentTimeMillis();
+                lastMode = "/w";
             }
 
             mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, desiredYaw, 30f));
@@ -66,6 +114,10 @@ public class Aiming {
             delta = -maxIncrement;
         }
         return current + delta;
+    }
+
+    private float clampFloat(float value, float min, float max) {
+        return Math.min(Math.max(value, min), max);
     }
 
     private float clampPitch(float pitch) {

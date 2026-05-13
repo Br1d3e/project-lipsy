@@ -12,12 +12,16 @@ public class ModelConnect {
     private static final long RETRY_DELAY_MS = 2000L;
 
     private final Minecraft mc;
-    private final int batchSize = 9;
+    private final int batchSize = 20;
     float[] batch = new float[batchSize];
     float[] actions = null;
     private ModelClient modelClient;
     private long lastConnectAttemptMs = 0L;
     private boolean printedOfflineMessage = false;
+    private Float previousMyYaw = null;
+    private Float previousMyPitch = null;
+    private Float previousTargetYaw = null;
+    private Float previousTargetPitch = null;
 
     public ModelConnect(Minecraft mc) {
         this.mc = mc;
@@ -28,30 +32,60 @@ public class ModelConnect {
         if (!ensureConnected()) return;
 
         // Whole list of player data from gameplay
-        double dx = target.posX - mc.thePlayer.posX;
-        double dy = target.posY - mc.thePlayer.posY;
-        double dz = target.posZ - mc.thePlayer.posZ;
-        double dist = mc.thePlayer.getDistanceToEntity(target);
-        double distanceXZ = Math.hypot(dx, dz);
-        double targetYaw = Math.toDegrees(Math.atan2(dz, dx)) - 90F;
-        // Vertical (pitch) offset
-        double targetPitch = -Math.toDegrees(Math.atan2(dy, distanceXZ));
-        float yawDiff = MathHelper.wrapAngleTo180_float((float) targetYaw - mc.thePlayer.rotationYaw);
-        float pitchDiff = MathHelper.wrapAngleTo180_float((float) targetPitch - mc.thePlayer.rotationPitch);
-        double targetVelX = target.motionX;
-        double targetVelY = target.motionY;
-        double targetVelZ = target.motionZ;
-        double targetMotion = Math.hypot(targetVelX, targetVelZ);
+        double myMotionX = mc.thePlayer.motionX;
+        double myMotionY = mc.thePlayer.motionY;
+        double myMotionZ = mc.thePlayer.motionZ;
+        double myYaw = mc.thePlayer.rotationYaw;
+        double myPitch = mc.thePlayer.rotationPitch;
+        Float myDeltaYaw = previousMyYaw == null ? null : MathHelper.wrapAngleTo180_float(mc.thePlayer.rotationYaw - previousMyYaw);
+        Float myDeltaPitch = previousMyPitch == null ? null : mc.thePlayer.rotationPitch - previousMyPitch;
+        previousMyYaw = mc.thePlayer.rotationYaw;
+        previousMyPitch = mc.thePlayer.rotationPitch;
+        double myMoveForward = mc.thePlayer.moveForward;
+        double myMoveStrafing = mc.thePlayer.moveStrafing;
 
-        batch[0] = (float) dx;
-        batch[1] = (float) dy;
-        batch[2] = (float) dz;
-        batch[3] = (float) dist;
-        batch[4] = (float) targetVelX;
-        batch[5] = (float) targetVelY;
-        batch[6] = (float) targetVelZ;
-        batch[7] = yawDiff;
-        batch[8] = pitchDiff;
+        double targetRelX = target.posX - mc.thePlayer.posX;
+        double targetRelY = target.posY + target.getEyeHeight() - (mc.thePlayer.posY + mc.thePlayer.getEyeHeight());
+        double targetRelZ = target.posZ - mc.thePlayer.posZ;
+        double targetDistance = mc.thePlayer.getDistanceToEntity(target);
+        double targetMotionX = target.motionX;
+        double targetMotionY = target.motionY;
+        double targetMotionZ = target.motionZ;
+        double targetYaw = target.rotationYaw;
+        double targetPitch = target.rotationPitch;
+        float targetDeltaYaw = previousTargetYaw == null ? 0 : MathHelper.wrapAngleTo180_float(target.rotationYaw - previousTargetYaw);
+        float targetDeltaPitch = previousTargetPitch == null ? 0 : MathHelper.wrapAngleTo180_float(target.rotationPitch - previousTargetPitch);
+        previousTargetYaw = target.rotationYaw;
+        previousTargetPitch = target.rotationPitch;
+
+        double distanceXZ = Math.hypot(targetRelX, targetRelZ);
+        double targetAimYaw = Math.toDegrees(Math.atan2(targetRelZ, targetRelX)) - 90F;
+        double targetAimPitch = -Math.toDegrees(Math.atan2(targetRelY, distanceXZ));
+        double yawDiffToTarget = (double) MathHelper.wrapAngleTo180_float((float) targetAimYaw - mc.thePlayer.rotationYaw);
+        double pitchDiffToTarget = (double) MathHelper.wrapAngleTo180_float((float) targetAimPitch - mc.thePlayer.rotationPitch);
+
+        batch[0] = (float) myMotionX;
+        batch[1] = (float) myMotionY;
+        batch[2] = (float) myMotionZ;
+        batch[3] = (float) myYaw;
+        batch[4] = (float) myPitch;
+        batch[5] = (float) myMoveForward;
+        batch[6] = (float) myMoveStrafing;
+        batch[7] = (float) targetRelX;
+        batch[8] = (float) targetRelY;
+        batch[9] = (float) targetRelZ;
+        batch[10] = (float) targetDistance;
+        batch[11] = (float) targetMotionX;
+        batch[12] = (float) targetMotionY;
+        batch[13] = (float) targetMotionZ;
+        batch[14] = (float) targetYaw;
+        batch[15] = (float) targetPitch;
+        batch[16] = targetDeltaYaw;
+        batch[17] = targetDeltaPitch;
+        batch[18] = (float) yawDiffToTarget;
+        batch[19] = (float) pitchDiffToTarget;
+
+
 
         try {
             modelClient.sendPacket(batch);
