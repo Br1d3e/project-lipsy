@@ -990,6 +990,12 @@ def manual_review_label(labels, session_id, anchor, rejected_anchors):
     existing_id = find_review_label_id(labels, anchor)
     existing = labels.get(existing_id, {}) if existing_id is not None else {}
     print("Manual review edit. Empty keeps suggested value; r returns.")
+    start_tick = prompt_value("start_tick", default=existing.get("start_tick"), cast=int)
+    if start_tick == "r":
+        return None
+    end_tick = prompt_value("end_tick", default=existing.get("end_tick"), cast=int)
+    if end_tick == "r":
+        return None
     label = prompt_value("label", default=existing.get("label") or anchor.get("suggested_label"), cast=str)
     if label == "r":
         return None
