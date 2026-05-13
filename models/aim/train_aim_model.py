@@ -77,7 +77,7 @@ class AimSimpleMLP(nn.Module):
         return self.layers(x)
 
 class AimStackedMLP(nn.Module):
-    def __init__(self, input_dim=20, output_dim=2):
+    def __init__(self, input_dim=16 * SEQ_LEN, output_dim=2):
         super().__init__()
         self.layers = nn.Sequential(
             nn.Linear(input_dim, 192),
@@ -309,7 +309,7 @@ if __name__ == "__main__":
 
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
-    model_name = "stacked MLP 12"
+    model_name = "stacked MLP 14"
     architecture = f"{input_dim} -> 192 -> 96 -> 48 -> 2"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
@@ -317,7 +317,7 @@ if __name__ == "__main__":
     # model = AimLSTM(input_dim=sample_x.shape[-1], output_dim=2)
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
 
-    model_path = os.path.join(BASE_DIR, "aim_stacked_mlp_12.pth")
+    model_path = os.path.join(BASE_DIR, "aim_stacked_mlp_14.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

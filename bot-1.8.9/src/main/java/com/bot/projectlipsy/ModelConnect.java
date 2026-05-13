@@ -12,7 +12,7 @@ public class ModelConnect {
     private static final long RETRY_DELAY_MS = 2000L;
 
     private final Minecraft mc;
-    private final int batchSize = 20;
+    private final int batchSize = 16;
     float[] batch = new float[batchSize];
     float[] actions = null;
     private ModelClient modelClient;
@@ -78,12 +78,12 @@ public class ModelConnect {
         batch[11] = (float) targetMotionX;
         batch[12] = (float) targetMotionY;
         batch[13] = (float) targetMotionZ;
-        batch[14] = (float) targetYaw;
-        batch[15] = (float) targetPitch;
-        batch[16] = targetDeltaYaw;
-        batch[17] = targetDeltaPitch;
-        batch[18] = (float) yawDiffToTarget;
-        batch[19] = (float) pitchDiffToTarget;
+//        batch[14] = (float) targetYaw;
+//        batch[15] = (float) targetPitch;
+//        batch[16] = targetDeltaYaw;
+//        batch[17] = targetDeltaPitch;
+        batch[14] = (float) yawDiffToTarget;
+        batch[15] = (float) pitchDiffToTarget;
 
 
 

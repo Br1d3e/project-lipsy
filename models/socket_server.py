@@ -18,6 +18,9 @@ sys.path.insert(0, AIM_DIR)
 from aim.train_aim_model import AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP, SEQ_LEN
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+OBS_SIZE = 16
+AIM_FEATURE_SIZE = 16
+ACTION_SIZE = 2
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
@@ -49,9 +52,9 @@ def load_model(path: str, input_dim: int, output_dim: int):
     return loaded
 
 AIM_MODEL_CONFIG = {
-    "MODEL_PATH": os.path.join(AIM_DIR, "aim_stacked_mlp_12.pth"),
-    "INPUT_DIM" : 20 * SEQ_LEN,
-    "OUTPUT_DIM": 2
+    "MODEL_PATH": os.path.join(AIM_DIR, "aim_stacked_mlp_14.pth"),
+    "INPUT_DIM" : AIM_FEATURE_SIZE * SEQ_LEN,
+    "OUTPUT_DIM": ACTION_SIZE
 }
 
 host = "127.0.0.1"
@@ -67,16 +70,18 @@ def recv_exact(conn: socket.socket, size: int):
     return data
 
 def read_obs_packet(conn: socket.socket):
-    OBS_SIZE = 20  # Observation vector size
     BODY_LENGTH = 4 + 8 + 4 * OBS_SIZE  # int32 seq + int64 nanotime + float32 observation vector
-    PACKET_LENGTH = 4 + BODY_LENGTH  # int32 body_length number + body
 
     # Header: body length
     header = recv_exact(conn, 4)
     body_len = int.from_bytes(header, byteorder="little", signed=False)
 
     if body_len != BODY_LENGTH:
-        raise ValueError("Body length mismatch")
+        got_obs_size = (body_len - 12) // 4 if body_len >= 12 and (body_len - 12) % 4 == 0 else None
+        raise ValueError(
+            "Body length mismatch: expected %d bytes (%d obs floats), got %d bytes (%s obs floats)"
+            % (BODY_LENGTH, OBS_SIZE, body_len, got_obs_size)
+        )
 
     # Payload: int32 seq + int64 nanotime + float32 observation vector
     payload = recv_exact(conn, body_len)
@@ -88,7 +93,9 @@ def read_obs_packet(conn: socket.socket):
 
 
 def get_aim_data(data: np.ndarray):
-    return data[:20]
+    if len(data) < AIM_FEATURE_SIZE:
+        raise ValueError("Aim observation too short: expected %d floats, got %d" % (AIM_FEATURE_SIZE, len(data)))
+    return data[:AIM_FEATURE_SIZE]
 
 def build_action_packet(seq: int, actions: list):
     actions = np.asarray(actions, dtype="<f4").reshape(-1)
@@ -145,7 +152,7 @@ def run_server():
 
                 packet = build_action_packet(seq, aim_y)
                 conn.sendall(packet)
-        except ConnectionError as e:
+        except (ConnectionError, ValueError) as e:
             print("Client disconnected:", e)
         finally:
             conn.close()

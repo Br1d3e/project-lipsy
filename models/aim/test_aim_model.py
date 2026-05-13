@@ -32,7 +32,7 @@ from models.window_dataset import WindowDataset
 from models.aim.aim_datasets import AimDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "aim_stacked_mlp_11.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "aim_stacked_mlp_14.pth")
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
@@ -174,6 +174,15 @@ def evaluate_axis(axis):
     print_axis_metrics(axis, y_true_axis, y_pred_axis, name="all")
     print_axis_metrics(axis, y_true_axis, y_pred_axis, mask=normal_mask, name="normal")
     print_axis_metrics(axis, y_true_axis, y_pred_axis, mask=flick_mask, name="flick/discontinuity")
+
+    yaw_pred = y_pred[:, 0]
+    yaw_ae = np.abs(yaw_true - yaw_pred)
+    max_ae_idx = np.argmax(yaw_ae)
+    print(f"Max yaw ae: yaw_pred = {yaw_pred[max_ae_idx]} | yaw_true = {yaw_true[max_ae_idx]} | ae = {yaw_ae[max_ae_idx]}")
+    X, Y = loader.dataset
+    x_max_ae = X[max_ae_idx]
+    print(f"yawDiff={x_max_ae[18]} | pitchDiff={x_max_ae[19]} | distance={x_max_ae[10]} | \nfeatures 5 ticks: {X[max_ae_idx - 5:max_ae_idx]}")
+
 
     plot_axis(axis, y_true_axis, y_pred_axis)
 
