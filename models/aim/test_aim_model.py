@@ -34,7 +34,7 @@ from models.window_dataset import WindowDataset
 from models.aim.aim_datasets import AimDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_3.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_6.pth")
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
@@ -55,6 +55,36 @@ def checkpoint_model_input_dim(model_class_name, checkpoint):
     return input_dim
 
 
+def checkpoint_cnn_layout(checkpoint):
+    state_dict = checkpoint["model_state_dict"]
+    conv_channels = []
+    linear_channels = []
+    conv_indices = []
+    linear_indices = []
+    for idx in range(0, 32, 2):
+        weight = state_dict.get("layers.%d.weight" % idx)
+        if weight is None or len(weight.shape) != 3:
+            break
+        conv_channels.append(int(weight.shape[0]))
+        conv_indices.append(idx)
+
+    for idx in range(0, 32):
+        weight = state_dict.get("layers.%d.weight" % idx)
+        if weight is None or len(weight.shape) != 2:
+            continue
+        linear_indices.append(idx)
+        out_features = int(weight.shape[0])
+        if out_features != int(checkpoint.get("output_dim", 2)):
+            linear_channels.append(out_features)
+
+    relu_after_final_conv = False
+    if conv_indices and linear_indices:
+        # With ReLU after final conv: pool index is last_conv + 2, flatten + 3, first linear + 4.
+        # Without it: pool index is last_conv + 1, flatten + 2, first linear + 3.
+        relu_after_final_conv = linear_indices[0] == conv_indices[-1] + 4
+    return conv_channels, linear_channels, relu_after_final_conv
+
+
 def load_model(path, device):
     # Backward compatibility for old checkpoints saved with torch.save(model)
     # while train_aim_model.py was running as __main__.
@@ -67,10 +97,16 @@ def load_model(path, device):
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         model_class_name = checkpoint.get("model_class", "Aim1dCNN")
         model_class = MODEL_CLASSES[model_class_name]
-        model = model_class(
-            input_dim=checkpoint_model_input_dim(model_class_name, checkpoint),
-            output_dim=checkpoint.get("output_dim", 2),
-        )
+        kwargs = {
+            "input_dim": checkpoint_model_input_dim(model_class_name, checkpoint),
+            "output_dim": checkpoint.get("output_dim", 2),
+        }
+        if model_class_name == "Aim1dCNN":
+            conv_channels, linear_channels, relu_after_final_conv = checkpoint_cnn_layout(checkpoint)
+            kwargs["conv_channels"] = conv_channels
+            kwargs["linear_channels"] = linear_channels
+            kwargs["relu_after_final_conv"] = relu_after_final_conv
+        model = model_class(**kwargs)
         model.load_state_dict(checkpoint["model_state_dict"])
     else:
         model = checkpoint

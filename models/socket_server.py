@@ -51,6 +51,34 @@ def checkpoint_model_input_dim(model_class_name, checkpoint, fallback_input_dim)
     return int(checkpoint.get("input_dim", fallback_input_dim))
 
 
+def checkpoint_cnn_layout(checkpoint):
+    state_dict = checkpoint["model_state_dict"]
+    conv_channels = []
+    linear_channels = []
+    conv_indices = []
+    linear_indices = []
+    for idx in range(0, 32, 2):
+        weight = state_dict.get("layers.%d.weight" % idx)
+        if weight is None or len(weight.shape) != 3:
+            break
+        conv_channels.append(int(weight.shape[0]))
+        conv_indices.append(idx)
+
+    for idx in range(0, 32):
+        weight = state_dict.get("layers.%d.weight" % idx)
+        if weight is None or len(weight.shape) != 2:
+            continue
+        linear_indices.append(idx)
+        out_features = int(weight.shape[0])
+        if out_features != int(checkpoint.get("output_dim", 2)):
+            linear_channels.append(out_features)
+
+    relu_after_final_conv = False
+    if conv_indices and linear_indices:
+        relu_after_final_conv = linear_indices[0] == conv_indices[-1] + 4
+    return conv_channels, linear_channels, relu_after_final_conv
+
+
 def load_model(path: str, input_dim: int, output_dim: int):
     main_module = sys.modules.get("__main__")
     if main_module is not None:
@@ -61,10 +89,16 @@ def load_model(path: str, input_dim: int, output_dim: int):
     if isinstance(loaded, dict) and "model_state_dict" in loaded:
         model_class_name = loaded.get("model_class", "Aim1dCNN")
         model_class = MODEL_CLASSES.get(model_class_name, Aim1dCNN)
-        model = model_class(
-            input_dim=checkpoint_model_input_dim(model_class_name, loaded, input_dim),
-            output_dim=loaded.get("output_dim", output_dim),
-        )
+        kwargs = {
+            "input_dim": checkpoint_model_input_dim(model_class_name, loaded, input_dim),
+            "output_dim": loaded.get("output_dim", output_dim),
+        }
+        if model_class_name == "Aim1dCNN":
+            conv_channels, linear_channels, relu_after_final_conv = checkpoint_cnn_layout(loaded)
+            kwargs["conv_channels"] = conv_channels
+            kwargs["linear_channels"] = linear_channels
+            kwargs["relu_after_final_conv"] = relu_after_final_conv
+        model = model_class(**kwargs)
         model.load_state_dict(loaded["model_state_dict"])
         model.checkpoint_meta = loaded
         return model
@@ -75,7 +109,7 @@ def load_model(path: str, input_dim: int, output_dim: int):
     return loaded
 
 AIM_MODEL_CONFIG = {
-    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_1.pth"),
+    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_6.pth"),
     "INPUT_DIM" : AIM_FEATURE_SIZE * AIM_SEQ_LEN,
     "OUTPUT_DIM": AIM_ACTION_SIZE
 }
@@ -169,10 +203,29 @@ def infer_flattened_input_dim(model, fallback_input_dim: int):
 
 
 def infer_seq_len(model, feature_size: int, fallback_input_dim: int):
-    input_dim = infer_flattened_input_dim(model, fallback_input_dim)
-    if input_dim % feature_size != 0:
-        raise ValueError("Model input_dim %d is not divisible by feature size %d" % (input_dim, feature_size))
-    return input_dim // feature_size
+    meta = getattr(model, "checkpoint_meta", None)
+
+    if isinstance(meta, dict):
+        if meta.get("seq_len") is not None:
+            return int(meta["seq_len"])
+
+        if meta.get("flat_input_dim") is not None:
+            flat_input_dim = int(meta["flat_input_dim"])
+            if flat_input_dim % feature_size != 0:
+                raise ValueError(
+                    f"flat_input_dim {flat_input_dim} not divisible by feature_size {feature_size}"
+                )
+            return flat_input_dim // feature_size
+
+        if meta.get("input_dim") is not None:
+            input_dim = int(meta["input_dim"])
+            if input_dim % feature_size != 0:
+                raise ValueError(
+                    f"input_dim {input_dim} not divisible by feature_size {feature_size}"
+                )
+            return input_dim // feature_size
+
+    return fallback_input_dim // feature_size
 
 
 def run_server():
@@ -183,29 +236,31 @@ def run_server():
     server.listen(1)
     print(f"Server running at {host}/{port}.")
 
+    aim_model = load_model(
+        AIM_MODEL_CONFIG["MODEL_PATH"],
+        AIM_MODEL_CONFIG["INPUT_DIM"],
+        AIM_MODEL_CONFIG["OUTPUT_DIM"],
+    )
+    aim_model.to(device)
+    aim_model.eval()
+    aim_seq_len = infer_seq_len(aim_model, AIM_FEATURE_SIZE, AIM_MODEL_CONFIG["INPUT_DIM"])
+
+    strafe_model = load_model(
+        STRAFE_MODEL_CONFIG["MODEL_PATH"],
+        STRAFE_MODEL_CONFIG["INPUT_DIM"],
+        STRAFE_MODEL_CONFIG["OUTPUT_DIM"]
+    )
+    strafe_model.to(device)
+    strafe_model.eval()
+    strafe_seq_len = infer_seq_len(strafe_model, STRAFE_FEATURE_SIZE, STRAFE_MODEL_CONFIG["INPUT_DIM"])
+    print("Loaded models: aim_seq_len=%d strafe_seq_len=%d" % (aim_seq_len, strafe_seq_len))
+
     while True:
         conn, addr = server.accept()
         print("Client connected", addr)
-        aim_model = load_model(
-            AIM_MODEL_CONFIG["MODEL_PATH"],
-            AIM_MODEL_CONFIG["INPUT_DIM"],
-            AIM_MODEL_CONFIG["OUTPUT_DIM"],
-        )
-        aim_model.to(device)
-        aim_model.eval()
-        aim_seq_len = infer_seq_len(aim_model, AIM_FEATURE_SIZE, AIM_MODEL_CONFIG["INPUT_DIM"])
         aim_history = deque(maxlen=aim_seq_len)
 
-        strafe_model = load_model(
-            STRAFE_MODEL_CONFIG["MODEL_PATH"],
-            STRAFE_MODEL_CONFIG["INPUT_DIM"],
-            STRAFE_MODEL_CONFIG["OUTPUT_DIM"]
-        )
-        strafe_model.to(device)
-        strafe_model.eval()
-        strafe_seq_len = infer_seq_len(strafe_model, STRAFE_FEATURE_SIZE, STRAFE_MODEL_CONFIG["INPUT_DIM"])
         strafe_history = deque(maxlen=strafe_seq_len)
-        print("Loaded models: aim_seq_len=%d strafe_seq_len=%d" % (aim_seq_len, strafe_seq_len))
 
         try:
             while True:
@@ -239,7 +294,7 @@ def run_server():
 
                 
                 # Keep legacy Java action layout:
-                # [deltaYaw, deltaPitch, reserved, strafeAxis]
+                # [deltaYaw, deltaPitch, strafeAxis, strafeConf]
                 action_list = np.concatenate((aim_y, np.asarray([strafe_y, strafe_confidence], dtype="<f4"))).tolist()
                 packet = build_action_packet(seq, action_list)
                 conn.sendall(packet)

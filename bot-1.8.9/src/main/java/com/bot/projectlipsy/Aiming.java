@@ -11,7 +11,7 @@ public class Aiming {
     private boolean modelLocked = false;
     private int recoverTicksLeft = 0;
 
-    private static final float SENSITIVITY = 1.25F;
+    private static final float SENSITIVITY = 1.0F;
 
     private static final float MODEL_ENTER_YAW = 30.0F;
     private static final float MODEL_EXIT_YAW = 60.0F;
@@ -19,11 +19,11 @@ public class Aiming {
     private static final float MODEL_EXIT_PITCH = 30.0F;
 
     private static final double MODEL_MIN_DISTANCE = 1.0;
-    private static final int MIN_RECOVER_TICKS = 4;
+    private static final int MIN_RECOVER_TICKS = 5;
     public Aiming(Minecraft mc) { this.mc = mc; }
 
     public void update(Entity target, float[] actions) {
-        if (target == null) return;
+        if (mc.thePlayer == null || target == null) return;
 
         double xOffset = getRandomOffset(0.05f);
         double yOffset = getRandomOffset(0.05f);
@@ -68,37 +68,37 @@ public class Aiming {
         }
 
         // Recovery mode
-        if (!modelLocked) {
-            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 70f));
+        if (!modelLocked || !hasModel) {
+            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 30f));
             mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, pitch, 30f));
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-//            if (!lastMode.equals("w/o")) {
-//                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
-//                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
-//                mc.thePlayer.sendChatMessage(testMsg);
-//                lastMsgMs = System.currentTimeMillis();
-//                lastMode = "w/o";
-//            }
+            if (!lastMode.equals("w/o")) {
+                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
+                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
+                mc.thePlayer.sendChatMessage(testMsg);
+                lastMsgMs = System.currentTimeMillis();
+                lastMode = "w/o";
+            }
 
         // aim with model
         } else {
             float predictedDeltaYaw = actions[0] * SENSITIVITY;
             float predictedDeltaPitch = actions[1];
-            predictedDeltaYaw = clampFloat(predictedDeltaYaw, -30F, 30F);
+            predictedDeltaYaw = clampFloat(predictedDeltaYaw, -50F, 50F);
             predictedDeltaPitch = clampFloat(predictedDeltaPitch, -15F, 15F);
             float desiredYaw = mc.thePlayer.rotationYaw + predictedDeltaYaw;
             float desiredPitch = mc.thePlayer.rotationPitch + predictedDeltaPitch;
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-//            if (!lastMode.equals("/w")) {
-//                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
-//                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
-//                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
-//                mc.thePlayer.sendChatMessage(testMsg);
-//                lastMsgMs = System.currentTimeMillis();
-//                lastMode = "/w";
-//            }
+            if (!lastMode.equals("/w")) {
+                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
+                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
+                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
+                mc.thePlayer.sendChatMessage(testMsg);
+                lastMsgMs = System.currentTimeMillis();
+                lastMode = "/w";
+            }
 
             mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, desiredYaw, 30f));
             mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, desiredPitch, 30f));

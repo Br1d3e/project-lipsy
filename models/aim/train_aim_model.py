@@ -93,22 +93,31 @@ class AimStackedMLP(nn.Module):
         return self.layers(x)
 
 class Aim1dCNN(nn.Module):
-    def __init__(self, input_dim=16, output_dim=2):
+    def __init__(self, input_dim=16, output_dim=2, conv_channels=None, linear_channels=None,
+                 relu_after_final_conv=False):
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Conv1d(input_dim, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv1d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv1d(64, 128, kernel_size=3, padding=1),
-            nn.AdaptiveAvgPool1d(1),
-            nn.Flatten(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, output_dim)
-        )
+        conv_channels = conv_channels or [32, 64, 128, 256]
+        linear_channels = linear_channels or [128, 64]
+
+        layers = []
+        in_channels = input_dim
+        for idx, out_channels in enumerate(conv_channels):
+            layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1))
+            if idx < len(conv_channels) - 1 or relu_after_final_conv:
+                layers.append(nn.ReLU())
+            in_channels = out_channels
+
+        layers.append(nn.AdaptiveAvgPool1d(1))
+        layers.append(nn.Flatten())
+
+        in_features = conv_channels[-1]
+        for out_features in linear_channels:
+            layers.append(nn.Linear(in_features, out_features))
+            layers.append(nn.ReLU())
+            in_features = out_features
+
+        layers.append(nn.Linear(in_features, output_dim))
+        self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
         x = x.transpose(1, 2)
@@ -322,8 +331,8 @@ if __name__ == "__main__":
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
-    model_name = "1dCNN 3"
-    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> avg pool 1 -> linear 64 -> linear 32 -> 2"
+    model_name = "1dCNN 6"
+    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> avg pool 1 -> linear 128 -> linear 64 -> 2"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
     # model = AimStackedMLP(input_dim=input_dim, output_dim=2)
@@ -331,7 +340,7 @@ if __name__ == "__main__":
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
     model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2)
 
-    model_path = os.path.join(BASE_DIR, "aim_cnn_3.pth")
+    model_path = os.path.join(BASE_DIR, "aim_cnn_6.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

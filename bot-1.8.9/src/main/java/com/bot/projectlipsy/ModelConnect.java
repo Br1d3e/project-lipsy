@@ -28,8 +28,14 @@ public class ModelConnect {
     }
 
     public void sendObs(EntityPlayer target) {
-        if (mc.thePlayer == null || target == null) return;
-        if (!ensureConnected()) return;
+        if (mc.thePlayer == null || target == null) {
+            actions = null;
+            return;
+        }
+        if (!ensureConnected()) {
+            actions = null;
+            return;
+        }
 
         // Whole list of player data from gameplay
         double myMotionX = mc.thePlayer.motionX;
@@ -90,6 +96,7 @@ public class ModelConnect {
             actions = modelClient.readPacket();
 //            mc.thePlayer.sendChatMessage(Arrays.toString(actions));
         } catch (IOException e) {
+            actions = null;
             closeClient();
             System.out.println("[Project Lipsy] Model connection lost: " + e.getMessage());
         }
