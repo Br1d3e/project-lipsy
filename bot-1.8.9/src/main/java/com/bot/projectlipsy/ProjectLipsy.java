@@ -73,7 +73,7 @@ public class ProjectLipsy {
             case ATTACK:
                 models.sendObs(target);
                 float[] actions = models.getActions();
-                movement.update(target);
+                movement.update(target, actions);
                 aiming.update(target, actions);
                 clicking.update(target);
                 break;

@@ -12,21 +12,33 @@ import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AIM_DIR = os.path.join(BASE_DIR, "aim")
+STRAFE_DIR = os.path.join(BASE_DIR, "strafe")
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, AIM_DIR)
+sys.path.insert(0, STRAFE_DIR)
 
-from aim.train_aim_model import AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP, SEQ_LEN
+from aim.train_aim_model import AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
+from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
+
+from strafe.train_strafe_model import StrafeStackedMLP
+from strafe.train_strafe_model import SEQ_LEN as STRAFE_SEQ_LEN
+
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-OBS_SIZE = 16
+OBS_SIZE = 17
 AIM_FEATURE_SIZE = 16
-ACTION_SIZE = 2
+STRAFE_FEATURE_SIZE = 16
+AIM_ACTION_SIZE = 2
+STRAFE_ACTION_SIZE = 1
+ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE
+STRAFE_OUTPUT_SIZE = 3
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
     "AimStackedMLP": AimStackedMLP,
     "AimLSTM": AimLSTM,
     "AimGRU": AimGRU,
+    "StrafeStackedMLP": StrafeStackedMLP
 }
 
 
@@ -44,6 +56,7 @@ def load_model(path: str, input_dim: int, output_dim: int):
             output_dim=loaded.get("output_dim", output_dim),
         )
         model.load_state_dict(loaded["model_state_dict"])
+        model.checkpoint_meta = loaded
         return model
     if isinstance(loaded, OrderedDict):
         model = AimStackedMLP(input_dim=input_dim, output_dim=output_dim)
@@ -53,8 +66,14 @@ def load_model(path: str, input_dim: int, output_dim: int):
 
 AIM_MODEL_CONFIG = {
     "MODEL_PATH": os.path.join(AIM_DIR, "aim_stacked_mlp_14.pth"),
-    "INPUT_DIM" : AIM_FEATURE_SIZE * SEQ_LEN,
-    "OUTPUT_DIM": ACTION_SIZE
+    "INPUT_DIM" : AIM_FEATURE_SIZE * AIM_SEQ_LEN,
+    "OUTPUT_DIM": AIM_ACTION_SIZE
+}
+
+STRAFE_MODEL_CONFIG = {
+    "MODEL_PATH": os.path.join(STRAFE_DIR, "strafe_stacked_mlp_1.pth"),
+    "INPUT_DIM": STRAFE_FEATURE_SIZE * STRAFE_SEQ_LEN,
+    "OUTPUT_DIM": STRAFE_OUTPUT_SIZE
 }
 
 host = "127.0.0.1"
@@ -97,11 +116,24 @@ def get_aim_data(data: np.ndarray):
         raise ValueError("Aim observation too short: expected %d floats, got %d" % (AIM_FEATURE_SIZE, len(data)))
     return data[:AIM_FEATURE_SIZE]
 
+def get_strafe_data(data: np.ndarray):
+    if len(data) < OBS_SIZE:
+        raise ValueError("Strafe observation too short: expected %d, got %d" % (OBS_SIZE, len(data)))
+    # Java obs layout:
+    # 0..3 motion/yaw, 4 myPitch, 5..15 movement/target/aim diffs, 16 myDeltaYaw.
+    # Strafe model FEATURES are:
+    # myMotionX/Y/Z, myYaw, myDeltaYaw, myMoveForward, myMoveStrafing,
+    # targetRelX/Y/Z, targetDistance, targetMotionX/Y/Z, yawDiffToTarget, pitchDiffToTarget.
+    return np.asarray([
+        data[0], data[1], data[2], data[3], data[16],
+        data[5], data[6], data[7], data[8], data[9], data[10],
+        data[11], data[12], data[13], data[14], data[15],
+    ], dtype="<f4")
+
 def build_action_packet(seq: int, actions: list):
     actions = np.asarray(actions, dtype="<f4").reshape(-1)
-    ACTION_SIZE = len(actions)  # Action vector size
-    BODY_LENGTH = 4 + 8 + 4 * ACTION_SIZE  # int32 seq + int64 nanotime + float32 action vector
-    PACKET_LENGTH = 4 + BODY_LENGTH  # int32 body_length number + body
+    action_size = len(actions)  # Action vector size
+    BODY_LENGTH = 4 + 8 + 4 * action_size  # int32 seq + int64 nanotime + float32 action vector
 
     packet = bytearray()
     # Header: body length
@@ -115,6 +147,24 @@ def build_action_packet(seq: int, actions: list):
     return packet
 
 
+def infer_flattened_input_dim(model, fallback_input_dim: int):
+    meta = getattr(model, "checkpoint_meta", None)
+    if isinstance(meta, dict) and meta.get("input_dim") is not None:
+        return int(meta["input_dim"])
+
+    for module in model.modules():
+        if isinstance(module, torch.nn.Linear):
+            return int(module.in_features)
+    return fallback_input_dim
+
+
+def infer_seq_len(model, feature_size: int, fallback_input_dim: int):
+    input_dim = infer_flattened_input_dim(model, fallback_input_dim)
+    if input_dim % feature_size != 0:
+        raise ValueError("Model input_dim %d is not divisible by feature size %d" % (input_dim, feature_size))
+    return input_dim // feature_size
+
+
 def run_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -126,7 +176,6 @@ def run_server():
     while True:
         conn, addr = server.accept()
         print("Client connected", addr)
-        aim_history = deque(maxlen=SEQ_LEN)
         aim_model = load_model(
             AIM_MODEL_CONFIG["MODEL_PATH"],
             AIM_MODEL_CONFIG["INPUT_DIM"],
@@ -134,6 +183,19 @@ def run_server():
         )
         aim_model.to(device)
         aim_model.eval()
+        aim_seq_len = infer_seq_len(aim_model, AIM_FEATURE_SIZE, AIM_MODEL_CONFIG["INPUT_DIM"])
+        aim_history = deque(maxlen=aim_seq_len)
+
+        strafe_model = load_model(
+            STRAFE_MODEL_CONFIG["MODEL_PATH"],
+            STRAFE_MODEL_CONFIG["INPUT_DIM"],
+            STRAFE_MODEL_CONFIG["OUTPUT_DIM"]
+        )
+        strafe_model.to(device)
+        strafe_model.eval()
+        strafe_seq_len = infer_seq_len(strafe_model, STRAFE_FEATURE_SIZE, STRAFE_MODEL_CONFIG["INPUT_DIM"])
+        strafe_history = deque(maxlen=strafe_seq_len)
+        print("Loaded models: aim_seq_len=%d strafe_seq_len=%d" % (aim_seq_len, strafe_seq_len))
 
         try:
             while True:
@@ -142,15 +204,34 @@ def run_server():
                 # Aiming
                 aim_x = get_aim_data(obs)
                 aim_history.append(aim_x)
-                while len(aim_history) < SEQ_LEN:
+                while len(aim_history) < aim_seq_len:
                     aim_history.appendleft(aim_x)
 
                 aim_tensor = torch.tensor(np.array(aim_history), dtype=torch.float32).unsqueeze(0).to(device)
-
                 with torch.no_grad():
                     aim_y = aim_model(aim_tensor).reshape(-1).cpu().numpy()[:2]
 
-                packet = build_action_packet(seq, aim_y)
+                # Strafe
+                strafe_x = get_strafe_data(obs)
+                strafe_history.append(strafe_x)
+                while len(strafe_history) < strafe_seq_len:
+                    strafe_history.appendleft(strafe_x)
+
+                strafe_tensor = torch.tensor(np.array(strafe_history), dtype=torch.float32).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    strafe_logits = strafe_model(strafe_tensor).reshape(-1).cpu().numpy()
+                    strafe_y = float(np.argmax(strafe_logits) - 1)
+
+                exp_logits = np.exp(strafe_logits - np.max(strafe_logits))
+                probs = exp_logits / exp_logits.sum()
+                pred_cls = int(np.argmax(probs))
+                strafe_confidence = float(probs[pred_cls])
+
+                
+                # Keep legacy Java action layout:
+                # [deltaYaw, deltaPitch, reserved, strafeAxis]
+                action_list = np.concatenate((aim_y, np.asarray([strafe_y, strafe_confidence], dtype="<f4"))).tolist()
+                packet = build_action_packet(seq, action_list)
                 conn.sendall(packet)
         except (ConnectionError, ValueError) as e:
             print("Client disconnected:", e)

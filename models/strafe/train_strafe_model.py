@@ -20,6 +20,7 @@ SEQ_LEN = 5
 BATCH_SIZE = 128
 EPOCHS = 100
 LEARNING_RATE = 1e-3
+CLASS_WEIGHTS = torch.tensor([1.5, 1, 1.2])
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -84,7 +85,8 @@ def train(model, dataloader, val_loader, save_path, checkpoint_meta=None,
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.7, patience=10)
-    criterion = nn.CrossEntropyLoss()
+    class_weights = CLASS_WEIGHTS.to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     best_loss = 1e9
     best_epoch = -1
@@ -147,7 +149,8 @@ def eval_model(model, dataloader, graph=False, diagnostics=False):
 
     total_loss = 0.0
     total_count = 0
-    criterion = nn.CrossEntropyLoss()
+    class_weights = CLASS_WEIGHTS.to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     Y_true = []
     Y_pred = []
@@ -206,12 +209,12 @@ if __name__ == "__main__":
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     output_dim = 3
-    model_name = "stacked MLP 2"
+    model_name = "stacked MLP 4"
     architecture = f"{input_dim} -> 256 -> 128 -> 64 -> 3"
 
     model = StrafeStackedMLP(input_dim=input_dim, output_dim=output_dim)
 
-    model_path = os.path.join(BASE_DIR, "strafe_stacked_mlp_2.pth")
+    model_path = os.path.join(BASE_DIR, "strafe_stacked_mlp_4.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,
@@ -245,6 +248,7 @@ if __name__ == "__main__":
           f"  learning_rate: {LEARNING_RATE}\n"
           f"  epochs: {EPOCHS}\n"
           f"  loss_type: CrossEntropy\n"
+          f"  weights: {CLASS_WEIGHTS.numpy()}\n"
           f"  classes: -1, 0, 1 mapped to 0, 1, 2\n"
           f"  best_epoch: {train_info['best_epoch']}\n"
           f"  best_val_loss: {train_info['best_val_loss']:.6f}\n"

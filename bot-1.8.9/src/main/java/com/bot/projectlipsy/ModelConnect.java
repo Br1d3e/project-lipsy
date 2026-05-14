@@ -12,7 +12,7 @@ public class ModelConnect {
     private static final long RETRY_DELAY_MS = 2000L;
 
     private final Minecraft mc;
-    private final int batchSize = 16;
+    private final int batchSize = 17;
     float[] batch = new float[batchSize];
     float[] actions = null;
     private ModelClient modelClient;
@@ -37,8 +37,8 @@ public class ModelConnect {
         double myMotionZ = mc.thePlayer.motionZ;
         double myYaw = mc.thePlayer.rotationYaw;
         double myPitch = mc.thePlayer.rotationPitch;
-        Float myDeltaYaw = previousMyYaw == null ? null : MathHelper.wrapAngleTo180_float(mc.thePlayer.rotationYaw - previousMyYaw);
-        Float myDeltaPitch = previousMyPitch == null ? null : mc.thePlayer.rotationPitch - previousMyPitch;
+        float myDeltaYaw = previousMyYaw == null ? 0.0F : MathHelper.wrapAngleTo180_float(mc.thePlayer.rotationYaw - previousMyYaw);
+        float myDeltaPitch = previousMyPitch == null ? 0.0F : mc.thePlayer.rotationPitch - previousMyPitch;
         previousMyYaw = mc.thePlayer.rotationYaw;
         previousMyPitch = mc.thePlayer.rotationPitch;
         double myMoveForward = mc.thePlayer.moveForward;
@@ -78,12 +78,9 @@ public class ModelConnect {
         batch[11] = (float) targetMotionX;
         batch[12] = (float) targetMotionY;
         batch[13] = (float) targetMotionZ;
-//        batch[14] = (float) targetYaw;
-//        batch[15] = (float) targetPitch;
-//        batch[16] = targetDeltaYaw;
-//        batch[17] = targetDeltaPitch;
         batch[14] = (float) yawDiffToTarget;
         batch[15] = (float) pitchDiffToTarget;
+        batch[16] = myDeltaYaw;
 
 
 
