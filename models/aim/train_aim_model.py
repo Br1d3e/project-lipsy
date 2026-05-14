@@ -100,8 +100,11 @@ class Aim1dCNN(nn.Module):
             nn.ReLU(),
             nn.Conv1d(32, 64, kernel_size=3, padding=1),
             nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
             nn.Linear(64, 32),
             nn.ReLU(),
             nn.Linear(32, output_dim)
@@ -319,8 +322,8 @@ if __name__ == "__main__":
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
-    model_name = "1dCNN 1"
-    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> avg pool 1 -> linear 32 -> 2"
+    model_name = "1dCNN 3"
+    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> avg pool 1 -> linear 64 -> linear 32 -> 2"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
     # model = AimStackedMLP(input_dim=input_dim, output_dim=2)
@@ -328,7 +331,7 @@ if __name__ == "__main__":
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
     model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2)
 
-    model_path = os.path.join(BASE_DIR, "aim_cnn_1.pth")
+    model_path = os.path.join(BASE_DIR, "aim_cnn_3.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,
