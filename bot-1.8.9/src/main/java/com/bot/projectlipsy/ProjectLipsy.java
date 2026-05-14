@@ -25,6 +25,7 @@ public class ProjectLipsy {
     private utils utils;
     private Pearl pearl;
     private ModelConnect models;
+    private Blockhit blockhit;
 
     private enum Status{
         ATTACK,
@@ -49,16 +50,23 @@ public class ProjectLipsy {
         utils = new utils(mc);
         pearl = new Pearl(mc);
         models = new ModelConnect(mc);
+        blockhit = new Blockhit(mc);
         // Register this class to receive tick events
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) throws Exception {
-        if (mc.thePlayer == null) return;
+        if (mc.thePlayer == null) {
+            if (blockhit != null) blockhit.cancel("player missing");
+            return;
+        }
 
         EntityPlayer target = findClosestPlayer();
-        if (target == null) return;
+        if (target == null) {
+            blockhit.cancel("target missing");
+            return;
+        }
 
         utils.updateCombos(target);
 
@@ -69,6 +77,10 @@ public class ProjectLipsy {
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
         }
 
+        if (status != Status.ATTACK) {
+            blockhit.cancel("status " + status);
+        }
+
         switch (status) {
             case ATTACK:
                 models.sendObs(target);
@@ -76,6 +88,7 @@ public class ProjectLipsy {
                 movement.update(target, actions);
                 aiming.update(target, actions);
                 clicking.update(target);
+                blockhit.update(target, false);
                 break;
 
             case RETREAT:

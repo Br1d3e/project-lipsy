@@ -16,8 +16,6 @@ import java.util.Map;
 public class Clicking {
     private final Minecraft mc;
     private final utils utils;
-    private boolean blockHitActive = false;
-    private long blockHitEndTime = 0;
     private long lastClickTime = 0;
     private int index = 0;
 
@@ -77,10 +75,7 @@ public class Clicking {
 
         utils.switchItem("Diamond Sword");
 
-        double dist = mc.thePlayer.getDistanceToEntity(target);
-
         tick("butterfly1");
-        blockhit(target, dist);
     }
 
     public void tick(String patternName) {
@@ -100,25 +95,4 @@ public class Clicking {
         }
     }
 
-    private void blockhit(EntityPlayer target, double dist) {
-        if (blockHitActive) {
-            if (System.currentTimeMillis() >= blockHitEndTime) {
-                blockHitActive = false;
-                KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
-            }
-            return;
-        }
-
-        if (target.hurtTime > 0 && dist <= 3.0F) {
-            long blockDuration = 0;
-            if (dist > 2.5F && dist < 3.0F) {
-                blockDuration = (long) (Math.random() * 100 + 50);
-            } else if (dist > 0 && dist <= 2.5F) {
-                blockDuration = (long) (Math.random() * 250 + 100);
-            }
-            blockHitActive = true;
-            blockHitEndTime = System.currentTimeMillis() + blockDuration;
-            KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
-        }
-    }
 }
