@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 try:
     from train_strafe_model import (
         StrafeStackedMLP,
+        Strafe1dCNN,
         BATCH_SIZE,
         SEQ_LEN,
         get_device,
@@ -22,6 +23,7 @@ try:
 except ModuleNotFoundError:
     from models.strafe.train_strafe_model import (
         StrafeStackedMLP,
+        Strafe1dCNN,
         BATCH_SIZE,
         SEQ_LEN,
         get_device,
@@ -32,11 +34,20 @@ from models.window_dataset import WindowDataset
 from models.strafe.strafe_datasets import StrafeDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "strafe_stacked_mlp_4.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "strafe_cnn_2.pth")
 
 MODEL_CLASSES = {
     "StrafeStackedMLP": StrafeStackedMLP,
+    "Strafe1dCNN": Strafe1dCNN
 }
+
+
+def checkpoint_model_input_dim(model_class_name, checkpoint):
+    state_dict = checkpoint["model_state_dict"]
+    first_linear = state_dict.get("layers.0.weight")
+    if first_linear is not None:
+        return int(first_linear.shape[1])
+    return int(checkpoint["input_dim"])
 
 
 def load_model(path, device):
@@ -49,10 +60,11 @@ def load_model(path, device):
 
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model_class = MODEL_CLASSES[checkpoint.get("model_class", "AimStackedMLP")]
+        model_class_name = checkpoint.get("model_class", "Strafe1dCNN")
+        model_class = MODEL_CLASSES[model_class_name]
         model = model_class(
-            input_dim=checkpoint["input_dim"],
-            output_dim=checkpoint.get("output_dim", 2),
+            input_dim=checkpoint_model_input_dim(model_class_name, checkpoint),
+            output_dim=checkpoint.get("output_dim", 3),
         )
         model.load_state_dict(checkpoint["model_state_dict"])
     else:

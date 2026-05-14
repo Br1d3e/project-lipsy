@@ -43,6 +43,28 @@ class StrafeStackedMLP(nn.Module):
             x = x.flatten(start_dim=1)
         return self.layers(x)
 
+class Strafe1dCNN(nn.Module):
+    def __init__(self, input_dim=16, output_dim=3):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Conv1d(input_dim, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, output_dim)
+        )
+
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        return self.layers(x)
+
 
 def strafe_to_class(y):
     y = y.reshape(-1)
@@ -208,13 +230,15 @@ if __name__ == "__main__":
 
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
+    feature_dim = sample_x.shape[-1]
     output_dim = 3
-    model_name = "stacked MLP 4"
-    architecture = f"{input_dim} -> 256 -> 128 -> 64 -> 3"
+    model_name = "1dCNN 2"
+    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> avg pool 1 -> linear 64 -> linear 32 -> 2"
 
-    model = StrafeStackedMLP(input_dim=input_dim, output_dim=output_dim)
+    # model = StrafeStackedMLP(input_dim=input_dim, output_dim=output_dim)
+    model = Strafe1dCNN(input_dim=feature_dim, output_dim=output_dim)
 
-    model_path = os.path.join(BASE_DIR, "strafe_stacked_mlp_4.pth")
+    model_path = os.path.join(BASE_DIR, "strafe_cnn_2.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,
