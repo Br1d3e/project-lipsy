@@ -26,8 +26,6 @@ YAW_WEIGHT = 2.0
 PITCH_WEIGHT = 1
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/"
-
 models_dir = os.path.join(BASE_DIR, "models/aim")
 
 
@@ -100,14 +98,6 @@ def get_device():
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
-
-
-def save_scalers(dataset, path):
-    with open(path, "wb") as f:
-        pickle.dump({
-            "scaler_x": dataset.scaler_x,
-            "scaler_y": dataset.scaler_y,
-        }, f)
 
 
 def make_train_criterion():

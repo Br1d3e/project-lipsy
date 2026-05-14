@@ -68,8 +68,8 @@ class Datasets:
         for idx, frame in frames.iterrows():
             if round_start != -1 and round_end != -1:
                 round = frames[
-                    (frames["recordingTickIndex"] >= round_start) &
-                    (frames["recordingTickIndex"] <= round_end)
+                    (frames["recordingTickIndex"] >= round_start + 50) &
+                    (frames["recordingTickIndex"] <= round_end - 50)
                     ].copy()
                 rounds.append(round)
                 round_start = -1
