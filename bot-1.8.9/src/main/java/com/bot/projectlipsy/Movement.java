@@ -10,6 +10,7 @@ public class Movement {
     private final float CONF_THRESHOLD = 0.6F;
     private int currentStrafe = 0;
     private int strafeHoldTicks = 0;
+    private int MIN_HOLD_TICKS = 3;
 
     public Movement(Minecraft mc) {
         this.mc = mc;
@@ -42,12 +43,14 @@ public class Movement {
         float confidence = actions[3];
 
         if (currentStrafe != strafeAxis) {
-            if (confidence >= CONF_THRESHOLD) {
-                currentStrafe = strafeAxis;
-                strafeHoldTicks = 0;
+            if (strafeHoldTicks > 0 || confidence < CONF_THRESHOLD) {
+                strafeAxis = currentStrafe;
             } else {
-                if (strafeHoldTicks > 0) strafeHoldTicks--;
+                currentStrafe = strafeAxis;
+                strafeHoldTicks = MIN_HOLD_TICKS;
             }
+        } else {
+            if (strafeHoldTicks > 0) strafeHoldTicks--;
         }
         applyStrafe(currentStrafe);
     }
