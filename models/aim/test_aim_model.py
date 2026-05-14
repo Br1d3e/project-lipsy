@@ -14,6 +14,7 @@ try:
         AimLSTM,
         AimSimpleMLP,
         AimStackedMLP,
+        Aim1dCNN,
         BATCH_SIZE,
         SEQ_LEN,
         get_device,
@@ -24,6 +25,7 @@ except ModuleNotFoundError:
         AimLSTM,
         AimSimpleMLP,
         AimStackedMLP,
+        Aim1dCNN,
         BATCH_SIZE,
         SEQ_LEN,
         get_device,
@@ -32,14 +34,25 @@ from models.window_dataset import WindowDataset
 from models.aim.aim_datasets import AimDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "aim_stacked_mlp_14.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_1.pth")
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
     "AimStackedMLP": AimStackedMLP,
     "AimLSTM": AimLSTM,
     "AimGRU": AimGRU,
+    "Aim1dCNN": Aim1dCNN
 }
+
+
+def checkpoint_model_input_dim(model_class_name, checkpoint):
+    input_dim = checkpoint["input_dim"]
+    if model_class_name == "Aim1dCNN":
+        state_dict = checkpoint["model_state_dict"]
+        conv_weight = state_dict.get("layers.0.weight")
+        if conv_weight is not None:
+            return int(conv_weight.shape[1])
+    return input_dim
 
 
 def load_model(path, device):
@@ -52,9 +65,10 @@ def load_model(path, device):
 
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model_class = MODEL_CLASSES[checkpoint.get("model_class", "AimStackedMLP")]
+        model_class_name = checkpoint.get("model_class", "Aim1dCNN")
+        model_class = MODEL_CLASSES[model_class_name]
         model = model_class(
-            input_dim=checkpoint["input_dim"],
+            input_dim=checkpoint_model_input_dim(model_class_name, checkpoint),
             output_dim=checkpoint.get("output_dim", 2),
         )
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -99,8 +113,8 @@ def plot_axis(axis, y_true, y_pred):
     plt.show()
 
     plt.figure(figsize=(12, 5))
-    plt.plot(y_true[:300], label="True")
-    plt.plot(y_pred[:300], label="Pred", alpha=0.75)
+    plt.plot(y_true[:], label="True")
+    plt.plot(y_pred[:], label="Pred", alpha=0.75)
     plt.title(f"{axis.capitalize()} next-error prediction over time")
     plt.legend()
     plt.show()
@@ -147,24 +161,6 @@ def evaluate_axis(axis):
     y_true_axis = y_true[:, axis_idx]
     y_pred_axis = y_pred[:, axis_idx]
 
-    # absolute_err = np.abs(y_true_axis - y_pred_axis)
-    # target_err = np.sort(absolute_err, axis=None)[-20:]
-    # # for i in range(len(absolute_err)):
-    # #     if absolute_err[i] in target_err:
-    # #         print(f"axis: {axis}\n"
-    # #               f"index: {i} \n"
-    # #               f"y_true: {y_true_axis[i]} \n"
-    # #               f"y_pred: {y_pred_axis[i]} \n"
-    # #               f"err: {absolute_err[i]}")
-    #
-    # mae = np.mean(absolute_err)
-    # rmse = np.sqrt(np.mean((y_pred_axis - y_true_axis) ** 2))
-    # print(f"{axis} | samples={len(test_dataset)} | MAE={mae:.4f} | RMSE={rmse:.4f} | "
-    #       f"median absolute err={np.median(absolute_err):.4f} | "
-    #       f"p90 ae={np.percentile(absolute_err, 90)} | "
-    #       f"p95 ae={np.percentile(absolute_err, 95)} | "
-    #       f"p99 ae={np.percentile(absolute_err, 99)}")
-
     yaw_true = y_true[:, 0]
     pitch_true = y_true[:, 1]
 
@@ -179,9 +175,17 @@ def evaluate_axis(axis):
     yaw_ae = np.abs(yaw_true - yaw_pred)
     max_ae_idx = np.argmax(yaw_ae)
     print(f"Max yaw ae: yaw_pred = {yaw_pred[max_ae_idx]} | yaw_true = {yaw_true[max_ae_idx]} | ae = {yaw_ae[max_ae_idx]}")
-    X, Y = loader.dataset
-    x_max_ae = X[max_ae_idx]
-    print(f"yawDiff={x_max_ae[18]} | pitchDiff={x_max_ae[19]} | distance={x_max_ae[10]} | \nfeatures 5 ticks: {X[max_ae_idx - 5:max_ae_idx]}")
+    x_max_ae = loader.dataset.X[max_ae_idx].numpy()
+    last_tick_features = x_max_ae[-1]
+    yaw_diff = last_tick_features[14]
+    pitch_diff = last_tick_features[15]
+    distance = last_tick_features[10]
+    history_start = max(0, max_ae_idx - 5)
+    history = np.stack([x.numpy() for x in loader.dataset.X[history_start:max_ae_idx]])
+    print(
+        f"yawDiff={yaw_diff} | pitchDiff={pitch_diff} | distance={distance} | "
+        # f"\nfeatures prev windows: {history}"
+    )
 
 
     plot_axis(axis, y_true_axis, y_pred_axis)

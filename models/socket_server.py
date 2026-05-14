@@ -17,7 +17,7 @@ sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, AIM_DIR)
 sys.path.insert(0, STRAFE_DIR)
 
-from aim.train_aim_model import AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
+from aim.train_aim_model import Aim1dCNN, AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
 from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
 
 from strafe.train_strafe_model import StrafeStackedMLP
@@ -38,8 +38,17 @@ MODEL_CLASSES = {
     "AimStackedMLP": AimStackedMLP,
     "AimLSTM": AimLSTM,
     "AimGRU": AimGRU,
+    "Aim1dCNN": Aim1dCNN,
     "StrafeStackedMLP": StrafeStackedMLP
 }
+
+
+def checkpoint_model_input_dim(model_class_name, checkpoint, fallback_input_dim):
+    if model_class_name == "Aim1dCNN":
+        conv_weight = checkpoint["model_state_dict"].get("layers.0.weight")
+        if conv_weight is not None:
+            return int(conv_weight.shape[1])
+    return int(checkpoint.get("input_dim", fallback_input_dim))
 
 
 def load_model(path: str, input_dim: int, output_dim: int):
@@ -50,22 +59,23 @@ def load_model(path: str, input_dim: int, output_dim: int):
 
     loaded = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(loaded, dict) and "model_state_dict" in loaded:
-        model_class = MODEL_CLASSES.get(loaded.get("model_class", "AimStackedMLP"), AimStackedMLP)
+        model_class_name = loaded.get("model_class", "Aim1dCNN")
+        model_class = MODEL_CLASSES.get(model_class_name, Aim1dCNN)
         model = model_class(
-            input_dim=loaded.get("input_dim", input_dim),
+            input_dim=checkpoint_model_input_dim(model_class_name, loaded, input_dim),
             output_dim=loaded.get("output_dim", output_dim),
         )
         model.load_state_dict(loaded["model_state_dict"])
         model.checkpoint_meta = loaded
         return model
     if isinstance(loaded, OrderedDict):
-        model = AimStackedMLP(input_dim=input_dim, output_dim=output_dim)
+        model = Aim1dCNN(input_dim=input_dim, output_dim=output_dim)
         model.load_state_dict(loaded)
         return model
     return loaded
 
 AIM_MODEL_CONFIG = {
-    "MODEL_PATH": os.path.join(AIM_DIR, "aim_stacked_mlp_14.pth"),
+    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_1.pth"),
     "INPUT_DIM" : AIM_FEATURE_SIZE * AIM_SEQ_LEN,
     "OUTPUT_DIM": AIM_ACTION_SIZE
 }

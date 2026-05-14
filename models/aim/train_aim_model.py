@@ -92,6 +92,25 @@ class AimStackedMLP(nn.Module):
             x = x.flatten(start_dim=1)
         return self.layers(x)
 
+class Aim1dCNN(nn.Module):
+    def __init__(self, input_dim=16, output_dim=2):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Conv1d(input_dim, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, output_dim)
+        )
+
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        return self.layers(x)
+
 def get_device():
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -299,19 +318,22 @@ if __name__ == "__main__":
 
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
-    model_name = "stacked MLP 14"
-    architecture = f"{input_dim} -> 192 -> 96 -> 48 -> 2"
+    feature_dim = sample_x.shape[-1]
+    model_name = "1dCNN 1"
+    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> avg pool 1 -> linear 32 -> 2"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
-    model = AimStackedMLP(input_dim=input_dim, output_dim=2)
+    # model = AimStackedMLP(input_dim=input_dim, output_dim=2)
     # model = AimLSTM(input_dim=sample_x.shape[-1], output_dim=2)
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
+    model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2)
 
-    model_path = os.path.join(BASE_DIR, "aim_stacked_mlp_14.pth")
+    model_path = os.path.join(BASE_DIR, "aim_cnn_1.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,
-        "input_dim": input_dim,
+        "input_dim": feature_dim,
+        "flat_input_dim": input_dim,
         "output_dim": 2,
         "architecture": architecture,
         "seq_len": SEQ_LEN,
