@@ -314,7 +314,15 @@ public class TargetHpTracker {
         if (thrower == target) return true;
         if (thrower != null) return false;
 
-        return target.getDistanceToEntity(potion) <= 4.0F;
+        double targetDistance = target.getDistanceToEntity(potion);
+        if (targetDistance > 4.0D) return false;
+
+        if (mc.thePlayer != null) {
+            double selfDistance = mc.thePlayer.getDistanceToEntity(potion);
+            if (selfDistance + 0.5D < targetDistance) return false;
+        }
+
+        return true;
     }
 
     private boolean isInstantHealthIISplashPotion(EntityPotion potion) {

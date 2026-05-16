@@ -598,7 +598,6 @@ public class Recorder {
         if (packet.getAction() == C02PacketUseEntity.Action.ATTACK) {
             boolean criticalHit = isCriticalAttackPacket(tick);
             lastAttackTick = tick;
-            lastHitLandedTick = tick;
             lastCriticalAttackTick = tick;
             lastCriticalAttackTargetEntityId = entity == null ? -1 : entity.getEntityId();
             lastCriticalAttackWasCritical = criticalHit;

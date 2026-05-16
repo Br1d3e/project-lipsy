@@ -115,7 +115,17 @@ public class TargetInventoryTracker {
         if (thrower == target) return true;
         if (thrower != null) return false;
 
-        return potion.ticksExisted <= 5 && target.getDistanceToEntity(potion) <= 4.0F;
+        if (potion.ticksExisted > 5) return false;
+
+        double targetDistance = target.getDistanceToEntity(potion);
+        if (targetDistance > 4.0D) return false;
+
+        if (mc.thePlayer != null) {
+            double selfDistance = mc.thePlayer.getDistanceToEntity(potion);
+            if (selfDistance + 0.5D < targetDistance) return false;
+        }
+
+        return true;
     }
 
     private boolean isTargetPearl(EntityEnderPearl pearl, EntityPlayer target) {

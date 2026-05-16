@@ -41,3 +41,20 @@ repositories {
     maven { url = "https://repo.spongepowered.org/repository/maven-public/" }
     maven { url = "https://jitpack.io" }
 }
+
+// ForgeGradle 1.2 can leave getAssets.index unset when run under newer Gradle.
+// Load the 1.7.10 asset index explicitly so setupDevWorkspace/runClient pass task validation.
+afterEvaluate {
+    tasks.getAssets.setIndex({
+        File indexFile = new File(gradle.gradleUserHomeDir, "caches/minecraft/assets/indexes/1.7.10.json")
+        if (!indexFile.exists()) {
+            indexFile.parentFile.mkdirs()
+            File bundledIndex = file("gradle/assets/1.7.10.json")
+            if (!bundledIndex.exists()) {
+                throw new GradleException("Missing bundled Minecraft 1.7.10 asset index: " + bundledIndex)
+            }
+            indexFile.bytes = bundledIndex.bytes
+        }
+        return net.minecraftforge.gradle.json.JsonFactory.loadAssetsIndex(indexFile)
+    } as groovy.lang.Closure)
+}
