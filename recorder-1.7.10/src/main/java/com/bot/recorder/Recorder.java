@@ -4,6 +4,7 @@ import com.bot.recorder.recordWriter.JsonLineBuilder;
 import com.bot.recorder.recordWriter.RecordWriter;
 import com.bot.recorder.targetTracker.TargetFoodTracker;
 import com.bot.recorder.targetTracker.TargetHpTracker;
+import com.bot.recorder.targetTracker.TargetInventoryTracker;
 import cpw.mods.fml.client.registry.ClientRegistry;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
@@ -12,6 +13,7 @@ import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.InputEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.inventory.GuiInventory;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.block.Block;
 import net.minecraft.entity.Entity;
@@ -63,6 +65,7 @@ public class Recorder {
             Recorder.this.writeEvent(type, details);
         }
     });
+    private final TargetInventoryTracker targetInventoryTracker = new TargetInventoryTracker(mc, itemsHandler);
     private final PacketHandler packetHandler = new PacketHandler(mc, PACKET_HOOK_NAME, PACKET_HOOK_CHECK_INTERVAL_TICKS, new PacketHandler.Listener() {
         public boolean isRecording() {
             return Recorder.this.isRecording();
@@ -113,6 +116,7 @@ public class Recorder {
     private int lastPearlTick = -1;
     private int lastEnemyPearlTick = -1;
     private int lastPotTick = -1;
+    private int lastBlockTick = -1;
     private int lastUseItemPacketTick = -1;
     private int lastVelocityEventTick = -1;
     private int lastVelocityEntityId = -1;
@@ -125,19 +129,20 @@ public class Recorder {
     private boolean lastCriticalAttackWasCritical = false;
     private int lastInventorySampleTick = -1;
     private List<String> cachedHotbar = new ArrayList<String>();
+    private int cachedHotbarPotions = 0;
     private int cachedInventoryFood = 0;
     private int cachedInventorySpeedPotions = 0;
     private int cachedInventoryHealthPotions = 0;
     private int cachedInventoryPearls = 0;
     private int lastSpatialSampleTick = -1;
-    private boolean cachedWallBehind = false;
-    private boolean cachedWallLeft = false;
-    private boolean cachedWallRight = false;
-    private boolean cachedWallFront = false;
     private Integer cachedBlockDistanceFront = null;
     private Integer cachedBlockDistanceBack = null;
     private Integer cachedBlockDistanceLeft = null;
     private Integer cachedBlockDistanceRight = null;
+    private boolean cachedWallFront = false;
+    private boolean cachedWallBehind = false;
+    private boolean cachedWallLeft = false;
+    private boolean cachedWallRight = false;
     private final JsonLineBuilder frameBuilder = new JsonLineBuilder(4096);
     private final Set<Integer> seenEnemyPearlEntityIds = new HashSet<Integer>();
     private final Set<Integer> activeEnemyPearlEntityIds = new HashSet<Integer>();
@@ -189,6 +194,8 @@ public class Recorder {
         updateInventoryCacheIfNeeded(currentTick);
         updateSpatialCacheIfNeeded(currentTick);
         targetHpTracker.updateTargetPotionState(target, currentTick);
+        targetInventoryTracker.trackHealthPotions(target);
+        targetInventoryTracker.trackPearls(target);
         targetFoodTracker.updateMovementExhaustion(target);
         targetFoodTracker.updateFoodUse(target, target == null ? null : target.getHeldItem(),
                 target != null && itemsHandler.isFood(target.getHeldItem()), currentTick);
@@ -223,6 +230,10 @@ public class Recorder {
             pearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
         } else if (pearlCooldownTicksRemaining > 0) {
             pearlCooldownTicksRemaining--;
+        }
+
+        if (itemsHandler.isSword(heldItem) && useItemStarted) {
+            lastBlockTick = currentTick;
         }
 
         boolean enemyPearl = updateEnemyPearlState(target, currentTick);
@@ -295,18 +306,19 @@ public class Recorder {
         frame.field("myUsingItem", mc.thePlayer.isUsingItem());
         frame.field("myHeldItem", itemsHandler.getDisplayName(mc.thePlayer.getHeldItem()));
         frame.field("myHeldItemType", itemsHandler.getHeldItemType(mc.thePlayer));
+        frame.field("myBlockingSword", itemsHandler.isSword(mc.thePlayer.getHeldItem()) && mc.thePlayer.isUsingItem());
         frame.field("myHasSpeedPotion", itemsHandler.hasPotion(mc.thePlayer, Potion.moveSpeed));
         frame.field("mySpeedDurationTicks", itemsHandler.getPotionDuration(mc.thePlayer, Potion.moveSpeed));
         frame.field("myFoodLevel", mc.thePlayer.getFoodStats().getFoodLevel());
         frame.field("myCombo", myCombo);
         frame.field("targetCombo", targetCombo);
         frame.field("pearlCooldownTicksRemaining", pearlCooldownTicksRemaining);
-//        frame.field("pearlCooldownSecondsRemaining", pearlCooldownTicksRemaining / 20.0F);
         frame.field("enemyPearlAvailable", enemyPearl);
         frame.field("enemyPearlCooldownTicksRemaining", enemyPearlCooldownTicksRemaining);
-//        frame.field("enemyPearlCooldownSecondsRemaining", enemyPearlCooldownTicksRemaining / 20.0F);
+        frame.field("inInventory", mc.currentScreen instanceof GuiInventory);
         frame.field("selectedSlot", mc.thePlayer.inventory.currentItem);
         frame.field("hotbar", cachedHotbar);
+        frame.field("hotbarHealthPotions", cachedHotbarPotions);
         frame.field("inventoryFood", cachedInventoryFood);
         frame.field("inventorySpeedPotions", cachedInventorySpeedPotions);
         frame.field("inventoryHealthPotions", cachedInventoryHealthPotions);
@@ -316,6 +328,7 @@ public class Recorder {
         frame.field("crosshairOnTarget", targetExists && crosshairEntity == target);
         frame.field("crosshairDistance", crosshairEntity == null ? null : (double) mc.thePlayer.getDistanceToEntity(crosshairEntity));
         frame.field("ticksSinceLastAttack", ticksSince(lastAttackTick, currentTick));
+        frame.field("ticksSinceLastBlock", ticksSince(lastBlockTick, currentTick));
         frame.field("ticksSinceLastPot", ticksSince(lastPotTick, currentTick));
         frame.field("ticksSinceLastEat", ticksSince(lastEatTick, currentTick));
         frame.field("ticksSinceLastSpeed", ticksSince(lastSpeedTick, currentTick));
@@ -348,12 +361,8 @@ public class Recorder {
         frame.field("targetDeltaPitch", targetPitchVel);
         frame.field("targetHpRaw", targetExists ? target.getHealth() : null);
         frame.field("targetEstimatedHp", targetExists ? targetHpTracker.getEstimatedTargetHp() : null);
-//        frame.field("targetEstimatedHpDefault", targetHpTracker.getTargetHpDefault());
-//        frame.field("targetEstimatedLastDamage", targetExists ? targetHpTracker.getLastEstimatedTargetDamage() : null);
-//        frame.field("targetEstimatedLastHeal", targetExists ? targetHpTracker.getLastEstimatedTargetHeal() : null);
-//        frame.field("targetProtectionEpf", targetExists ? targetHpTracker.getTargetProtectionEpf() : null);
-//        frame.field("targetFeatherFallingLevel", targetExists ? targetHpTracker.getTargetFeatherFallingLevel() : null);
-//        frame.field("targetPearlDamageEpf", targetExists ? targetHpTracker.getTargetPearlDamageEpf() : null);
+        frame.field("targetEstimatedPotions", targetExists ? targetInventoryTracker.getTargetHealthPotions() : null);
+        frame.field("targetEstimatedPearls", targetExists ? targetInventoryTracker.getTargetPearls() : null);
         frame.field("targetHurtTime", targetExists ? target.hurtTime : null);
         frame.field("targetHurtResistantTime", targetExists ? target.hurtResistantTime : null);
         frame.field("targetOnGround", targetExists ? target.onGround : null);
@@ -363,17 +372,12 @@ public class Recorder {
         frame.field("targetHeldItemType", targetExists ? itemsHandler.getHeldItemType(target) : null);
         frame.field("targetHasSpeedPotion", targetExists ? itemsHandler.hasPotion(target, Potion.moveSpeed) : null);
         frame.field("targetSpeedDurationTicks", targetExists ? itemsHandler.getPotionDuration(target, Potion.moveSpeed): null);
-//        frame.field("targetEstimatedSaturation", targetExists ? targetFoodTracker.getTargetSaturation() : null);
-//        frame.field("targetEstimatedExhaustion", targetExists ? targetFoodTracker.getTargetExhaustion() : null);
-//        frame.field("targetEstimatedFoodTimer", targetExists ? targetHpTracker.getNaturalRegenTimer() : null);
         frame.field("targetFood", targetExists ? targetFoodTracker.getTargetHunger() : null);
-//        frame.field("targetFoodLevel", targetExists ? targetFoodTracker.getTargetHunger() : null);
         frame.field("targetFoodRaw", targetExists ? target.getFoodStats().getFoodLevel() : null);
         frame.field("targetEating", targetExists ? itemsHandler.isFood(target.getHeldItem()) && target.isUsingItem() : null);
         frame.field("targetSpeeding", targetExists ? itemsHandler.isSpeedPotion(target.getHeldItem()) && target.isUsingItem() : null);
         frame.field("targetPearling", targetExists ? itemsHandler.isPearl(target.getHeldItem()) && target.isUsingItem() : null);
         frame.field("targetPotting", targetExists ? itemsHandler.isSplashHealthPotion(target.getHeldItem()) && target.isUsingItem() : null);
-//        frame.field("lineOfSight", targetExists && crosshairEntity == target);
         frame.field("yawDiffToTarget", yawDiffToTarget);
         frame.field("pitchDiffToTarget", pitchDiffToTarget);
         frame.field("hpDiffRaw", hpDiffRaw);
@@ -470,6 +474,7 @@ public class Recorder {
 
         lastInventorySampleTick = currentTick;
         cachedHotbar = itemsHandler.getHotbarSnapshot();
+        cachedHotbarPotions = itemsHandler.countHotbarHealthPotions();
         cachedInventoryFood = itemsHandler.countFoodItems();
         cachedInventorySpeedPotions = itemsHandler.countSpeedPotions();
         cachedInventoryHealthPotions = itemsHandler.countSplashHealthPotions();
@@ -819,6 +824,7 @@ public class Recorder {
         recordingTickIndex = 0;
         lastInventorySampleTick = -1;
         cachedHotbar = new ArrayList<String>();
+        cachedHotbarPotions = 0;
         cachedInventoryFood = 0;
         cachedInventorySpeedPotions = 0;
         cachedInventoryHealthPotions = 0;
@@ -868,6 +874,7 @@ public class Recorder {
         comboTrackedTargetId = -1;
         targetHpTracker.reset();
         targetFoodTracker.reset();
+        targetInventoryTracker.reset();
 
         try {
             recordWriter.startSession(startTimeMs, startWorldTick, serverIp);

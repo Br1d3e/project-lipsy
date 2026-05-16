@@ -38,6 +38,8 @@ public class TargetHpTracker {
     private static final double POTION_DIRECT_HIT_BOX_EXPAND = 0.3D;
     private static final double POTION_DIRECT_HIT_EPSILON = 1.44D;
     private static final int TARGET_HITBOX_HISTORY_TICKS = 8;
+    private static final int TARGET_BLOCKING_HISTORY_TICKS = 5;
+    private static final int TARGET_BLOCKING_PRE_HIT_WINDOW_TICKS = 3;
     private static final int NATURAL_REGEN_INTERVAL_TICKS = 80;
     private static final float NATURAL_REGEN_HEAL_HP = 1.0F;
     private int trackedTargetId = -1;
@@ -51,6 +53,7 @@ public class TargetHpTracker {
     private final Map<Integer, TrackedPotion> targetPotions = new HashMap<Integer, TrackedPotion>();
     private final Set<Integer> processedTargetPotionEntityIds = new HashSet<Integer>();
     private final Deque<TargetHitboxSnapshot> targetHitboxHistory = new ArrayDeque<TargetHitboxSnapshot>();
+    private final Deque<TargetBlockingSnapshot> targetBlockingHistory = new ArrayDeque<TargetBlockingSnapshot>();
 
     public TargetHpTracker(Minecraft mc, ItemsHandler itemsHandler, EventSink eventSink) {
         this.mc = mc;
@@ -70,6 +73,7 @@ public class TargetHpTracker {
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
         targetHitboxHistory.clear();
+        targetBlockingHistory.clear();
     }
 
     public void updateTargetState(EntityPlayer target, int currentTick) {
@@ -77,6 +81,7 @@ public class TargetHpTracker {
         if (currentTargetId == trackedTargetId) {
             updateTargetArmorState(target);
             rememberTargetHitbox(target, currentTick);
+            rememberTargetBlocking(target, currentTick);
             return;
         }
 
@@ -89,8 +94,10 @@ public class TargetHpTracker {
         targetPotions.clear();
         processedTargetPotionEntityIds.clear();
         targetHitboxHistory.clear();
+        targetBlockingHistory.clear();
         updateTargetArmorState(target);
         rememberTargetHitbox(target, currentTick);
+        rememberTargetBlocking(target, currentTick);
 
         writeEvent("TARGET_CHANGED", detailsBuilder()
                 .field("previousTargetId", previousTargetId < 0 ? null : previousTargetId)
@@ -135,7 +142,9 @@ public class TargetHpTracker {
         updateTargetArmorState(target);
         int baseDamage = getSwordBaseDamage(itemsHandler.heldSwordType(attackerHeldItem));
         int sharpnessLevel = getSharpnessLevel(attackerHeldItem);
-        SwordDamageEstimate damageEstimate = calculateEstimatedSwordDamage(baseDamage, sharpnessLevel, criticalHit);
+        TargetBlockEstimate targetBlockEstimate = estimateTargetBlockingAtHit(currentTick, target);
+        SwordDamageEstimate damageEstimate = calculateEstimatedSwordDamage(baseDamage, sharpnessLevel, criticalHit,
+                targetBlockEstimate.blockingForDamage);
         float damage = damageEstimate.expectedDamage;
         estimatedTargetHp = clampFloat(estimatedTargetHp - damage, 0.0F, TARGET_HP_DEFAULT);
         lastEstimatedTargetDamage = damage;
@@ -158,18 +167,19 @@ public class TargetHpTracker {
 //                .field("tick", currentTick));
     }
 
-    public SwordDamageEstimate calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel, boolean criticalHit) {
+    public SwordDamageEstimate calculateEstimatedSwordDamage(int baseDamage, int sharpnessLevel, boolean criticalHit, boolean targetBlocking) {
         float critMultiplier = criticalHit ? CRIT_MULTIPLIER : 1.0F;
         float preArmorDamage = baseDamage * critMultiplier + 1.25F * sharpnessLevel;
+        float preArmorBlockedDamage = targetBlocking ? (preArmorDamage + 1.0F) / 2.0F : preArmorDamage;
         float armorMultiplier = (25.0F - targetArmorPoints) / 25.0F;
         int minRandomEpf = getMinRandomizedProtectionEpf(targetProtectionEpf);
         int maxRandomEpf = getMaxRandomizedProtectionEpf(targetProtectionEpf);
         float expectedRandomEpf = getExpectedRandomizedProtectionEpf(targetProtectionEpf);
 
         return new SwordDamageEstimate(
-                calculateDamageAfterProtection(preArmorDamage, armorMultiplier, expectedRandomEpf),
-                calculateDamageAfterProtection(preArmorDamage, armorMultiplier, maxRandomEpf),
-                calculateDamageAfterProtection(preArmorDamage, armorMultiplier, minRandomEpf),
+                calculateDamageAfterProtection(preArmorBlockedDamage, armorMultiplier, expectedRandomEpf),
+                calculateDamageAfterProtection(preArmorBlockedDamage, armorMultiplier, maxRandomEpf),
+                calculateDamageAfterProtection(preArmorBlockedDamage, armorMultiplier, minRandomEpf),
                 expectedRandomEpf,
                 minRandomEpf,
                 maxRandomEpf);
@@ -486,6 +496,56 @@ public class TargetHpTracker {
         }
     }
 
+    private void rememberTargetBlocking(EntityPlayer target, int currentTick) {
+        if (target == null) {
+            targetBlockingHistory.clear();
+            return;
+        }
+
+        ItemStack heldItem = target.getHeldItem();
+        boolean holdingSword = itemsHandler.isSword(heldItem);
+        boolean blockingSword = holdingSword && target.isUsingItem();
+        targetBlockingHistory.addLast(new TargetBlockingSnapshot(currentTick, holdingSword, target.isUsingItem(), blockingSword));
+
+        while (targetBlockingHistory.size() > TARGET_BLOCKING_HISTORY_TICKS) {
+            targetBlockingHistory.removeFirst();
+        }
+    }
+
+    private TargetBlockEstimate estimateTargetBlockingAtHit(int hitTick, EntityPlayer target) {
+        boolean blockingAtHitTick = false;
+        boolean blockingRecentPreHit = false;
+        int mostRecentBlockingTick = -1;
+        int oldestAllowedTick = hitTick - TARGET_BLOCKING_PRE_HIT_WINDOW_TICKS;
+
+        for (TargetBlockingSnapshot snapshot : targetBlockingHistory) {
+            if (!snapshot.blockingSword) continue;
+
+            if (snapshot.tick == hitTick) {
+                blockingAtHitTick = true;
+                mostRecentBlockingTick = snapshot.tick;
+            } else if (snapshot.tick >= oldestAllowedTick && snapshot.tick < hitTick) {
+                blockingRecentPreHit = true;
+                if (snapshot.tick > mostRecentBlockingTick) {
+                    mostRecentBlockingTick = snapshot.tick;
+                }
+            }
+        }
+
+        if (!blockingAtHitTick && target != null) {
+            ItemStack heldItem = target.getHeldItem();
+            blockingAtHitTick = itemsHandler.isSword(heldItem) && target.isUsingItem();
+            if (blockingAtHitTick) {
+                mostRecentBlockingTick = hitTick;
+            }
+        }
+
+        return new TargetBlockEstimate(blockingAtHitTick || blockingRecentPreHit,
+                blockingAtHitTick,
+                blockingRecentPreHit,
+                mostRecentBlockingTick);
+    }
+
     private int getTargetArmor(EntityPlayer target) {
         if (target == null) return 0;
         return target.getTotalArmorValue();
@@ -610,6 +670,23 @@ public class TargetHpTracker {
         double currentAabbDistanceSq = Double.POSITIVE_INFINITY;
     }
 
+    private class TargetBlockEstimate {
+        final boolean blockingForDamage;
+        final boolean blockingAtHitTick;
+        final boolean blockingRecentPreHit;
+        final int mostRecentBlockingTick;
+
+        TargetBlockEstimate(boolean blockingForDamage,
+                            boolean blockingAtHitTick,
+                            boolean blockingRecentPreHit,
+                            int mostRecentBlockingTick) {
+            this.blockingForDamage = blockingForDamage;
+            this.blockingAtHitTick = blockingAtHitTick;
+            this.blockingRecentPreHit = blockingRecentPreHit;
+            this.mostRecentBlockingTick = mostRecentBlockingTick;
+        }
+    }
+
     public static class SwordDamageEstimate {
         public final float expectedDamage;
         public final float minPossibleDamage;
@@ -648,6 +725,20 @@ public class TargetHpTracker {
             this.boundingBox = boundingBox;
         }
 
+    }
+
+    private class TargetBlockingSnapshot {
+        final int tick;
+        final boolean holdingSword;
+        final boolean usingItem;
+        final boolean blockingSword;
+
+        TargetBlockingSnapshot(int tick, boolean holdingSword, boolean usingItem, boolean blockingSword) {
+            this.tick = tick;
+            this.holdingSword = holdingSword;
+            this.usingItem = usingItem;
+            this.blockingSword = blockingSword;
+        }
     }
 
 }

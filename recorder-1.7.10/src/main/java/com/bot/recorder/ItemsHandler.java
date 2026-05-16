@@ -89,6 +89,27 @@ public class ItemsHandler {
         return count;
     }
 
+    public int countHotbarItems(ItemMatcher matcher) {
+        int count = 0;
+
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
+            if (stack != null && matcher.matches(stack)) {
+                count += stack.stackSize;
+            }
+        }
+
+        return count;
+    }
+
+    public int countHotbarHealthPotions() {
+        return countHotbarItems(new ItemMatcher() {
+            public boolean matches(ItemStack stack) {
+                return isSplashHealthPotion(stack);
+            }
+        });
+    }
+
     public String getItemType(ItemStack stack) {
         if (stack == null || stack.getItem() == null) return null;
 
