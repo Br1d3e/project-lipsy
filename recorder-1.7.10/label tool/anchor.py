@@ -231,7 +231,7 @@ def first_tick_between(ticks, start_tick, end_tick):
 def interrupt_intervals(anchors):
     intervals = []
     for anchor in anchors:
-        if anchor.get("suggested_label") not in ("heal", "pearl", "retreat"):
+        if anchor.get("suggested_label") not in ("heal", "pearl", "retreat", "speed", "eat", "refill"):
             continue
         start_tick = anchor.get("start_tick")
         end_tick = anchor.get("end_tick")
@@ -488,6 +488,89 @@ def generate_attack_anchors(frames, events, session_id, anchors):
             review_policy="auto",
         )
 
+def generate_refill_anchors(frames, session_id, anchors):
+    if frames.empty:
+        return
+
+    inventory_column = None
+    for column in ("inInventory", "in_inventory"):
+        if column in frames.columns:
+            inventory_column = column
+            break
+    if inventory_column is None:
+        return
+
+    tick_name = tick_col(frames)
+    ticks = series_numeric(frames, tick_name).astype(int)
+    in_inventory = series_bool(frames, inventory_column)
+    start_idx = None
+
+    for idx in frames.index:
+        if in_inventory.loc[idx] and start_idx is None:
+            start_idx = idx
+        elif not in_inventory.loc[idx] and start_idx is not None:
+            end_idx = idx - 1
+            add_anchor(
+                anchors, session_id, int(ticks.loc[start_idx]), "refill_candidate", "refill",
+                source="gui_inventory",
+                start_tick=int(ticks.loc[start_idx]),
+                end_tick=int(ticks.loc[end_idx]),
+                cooldown=0,
+                review_policy="auto",
+            )
+            start_idx = None
+
+    if start_idx is not None:
+        end_idx = frames.index[-1]
+        add_anchor(
+            anchors, session_id, int(ticks.loc[start_idx]), "refill_candidate", "refill",
+            source="gui_inventory",
+            start_tick=int(ticks.loc[start_idx]),
+            end_tick=int(ticks.loc[end_idx]),
+            cooldown=0,
+            review_policy="auto",
+        )
+
+def generate_eat_anchors(frames, events, session_id, anchors):
+    food_mask = item_contains(frames, [
+        "carrotgolden",
+        "carrotsgolden",
+        "golden carrot",
+        "beefcooked",
+        "cooked_beef",
+        "cooked beef",
+        "steak",
+    ])
+    for segment in item_use_segments(frames, food_mask, event_ticks(events, ["FOOD_EAT"])):
+        add_anchor(
+            anchors, session_id, segment["tick"], "eat_candidate", "eat",
+            source="held_food_segment_use",
+            start_tick=segment["start_tick"],
+            end_tick=segment["end_tick"],
+            suggested_reward=1,
+            cooldown=0,
+            review_policy="review",
+        )
+
+def generate_speed_anchors(frames, events, session_id, anchors):
+    text = item_text(frames)
+    speed_mask = (
+        text.str.contains("potion", regex=False)
+        & (
+            text.str.contains("swiftness", regex=False)
+            | text.str.contains("speed", regex=False)
+        )
+    )
+    for segment in item_use_segments(frames, speed_mask, event_ticks(events, ["SPEED_USE"])):
+        add_anchor(
+            anchors, session_id, segment["tick"], "speed_candidate", "speed",
+            source="held_speed_segment_use",
+            start_tick=segment["start_tick"],
+            end_tick=segment["end_tick"],
+            suggested_reward=1,
+            cooldown=0,
+            review_policy="review",
+        )
 
 def prepare_frames(frames):
     if frames.empty:
@@ -543,6 +626,9 @@ def main():
     anchors = []
     generate_healing_anchors(frames, events, session_id, anchors)
     generate_pearl_anchors(frames, events, session_id, anchors)
+    generate_speed_anchors(frames, events, session_id, anchors)
+    generate_eat_anchors(frames, events, session_id, anchors)
+    generate_refill_anchors(frames, session_id, anchors)
     generate_retreat_anchors(frames, session_id, anchors)
     generate_attack_anchors(frames, events, session_id, anchors)
 

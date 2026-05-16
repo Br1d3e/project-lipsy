@@ -37,7 +37,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
-@Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "2.0")
+@Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "2.1")
 public class Recorder {
 
     private final Minecraft mc = Minecraft.getMinecraft();

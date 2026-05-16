@@ -25,7 +25,7 @@ apply plugin: 'forge'
 
 sourceCompatibility = JavaVersion.VERSION_1_8
 targetCompatibility = JavaVersion.VERSION_1_8
-version = "1.0"
+version = "2.1"
 group = "com.bot.recorder"
 archivesBaseName = "Recorder"
 

@@ -14,8 +14,14 @@ LABELS_NAME = "labels.json"
 class Datasets:
     def __init__(self, folder):
         self.folder = folder
-        self.frames, self.labels = self.load_folder(folder)
-        self.rounds = self.split_rounds(self.frames)
+        if "/" in folder and "session" not in folder:
+            self.frames, self.labels = self.load_folders(folder)
+            self.rounds = []
+            for session_frame, session_label in zip(self.frames, self.labels):
+                self.rounds.extend(self.split_rounds(session_frame))
+        else:
+            self.frames, self.labels = self.load_folder(folder)
+            self.rounds = self.split_rounds(self.frames)
         self.train_data, self.val_data, self.test_data = self.split_train_val_test(self.rounds)
 
     def _read_jsonl(self, path):
@@ -119,3 +125,7 @@ class Datasets:
     def get_labels(self):
         return self.labels
 
+if __name__ == "__main__":
+    dataset = Datasets(FOLDER)
+    train, val, test = dataset.get_datasets()
+    print(len(train), len(val), len(test))
