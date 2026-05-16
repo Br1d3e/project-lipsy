@@ -13,12 +13,12 @@ public class Aiming {
 
     private static final float SENSITIVITY = 1.0F;
 
-    private static final float MODEL_ENTER_YAW = 30.0F;
+    private static final float MODEL_ENTER_YAW = 40.0F;
     private static final float MODEL_EXIT_YAW = 60.0F;
     private static final float MODEL_ENTER_PITCH = 20.0F;
     private static final float MODEL_EXIT_PITCH = 30.0F;
 
-    private static final double MODEL_MIN_DISTANCE = 1.0;
+    private static final double MODEL_MIN_DISTANCE = 0.5;
     private static final int MIN_RECOVER_TICKS = 5;
     public Aiming(Minecraft mc) { this.mc = mc; }
 

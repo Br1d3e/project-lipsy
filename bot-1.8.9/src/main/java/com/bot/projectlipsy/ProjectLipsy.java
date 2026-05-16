@@ -6,8 +6,6 @@ import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.settings.KeyBinding;
-import net.minecraft.util.MathHelper;
 
 import java.util.Comparator;
 
@@ -46,7 +44,7 @@ public class ProjectLipsy {
         movement = new Movement(mc);
         aiming = new Aiming(mc);
         clicking = new Clicking(mc);
-        healing = new Healing(mc);
+        healing = new Healing(mc, movement);
         utils = new utils(mc);
         pearl = new Pearl(mc);
         models = new ModelConnect(mc);
@@ -59,12 +57,14 @@ public class ProjectLipsy {
     public void onClientTick(TickEvent.ClientTickEvent event) throws Exception {
         if (mc.thePlayer == null) {
             if (blockhit != null) blockhit.cancel("player missing");
+            if (healing != null) healing.stopUtilityUse();
             return;
         }
 
         EntityPlayer target = findClosestPlayer();
         if (target == null) {
             blockhit.cancel("target missing");
+            healing.stopUtilityUse();
             return;
         }
 
@@ -74,7 +74,7 @@ public class ProjectLipsy {
         statusController(target);
 
         if ((prevStatus == Status.EAT || prevStatus == Status.SPEED) && status != prevStatus) {
-            KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
+            healing.stopUtilityUse();
         }
 
         if (status != Status.ATTACK) {
@@ -93,26 +93,17 @@ public class ProjectLipsy {
 
             case RETREAT:
                 mc.thePlayer.rotationYaw = movement.getRetreatYaw(target);
-                movement.retreat();
+                movement.sprint();
                 break;
 
             case HEAL:
                 if (!utils.hasItem("Splash Potion of Healing")){
+                    healing.stopPotting();
                     status = Status.ATTACK;
                     break;
                 }
-                Healing.HealingState healingState = healing.getState();
-                if (healingState == Healing.HealingState.TURNING) {
-                    float retreatYaw = movement.getRetreatYaw(target);
-                    mc.thePlayer.rotationYaw = retreatYaw;
-                    // Check if the turn is complete
-                    if (Math.abs(MathHelper.wrapAngleTo180_float(mc.thePlayer.rotationYaw - retreatYaw)) < 5) {
-                        healing.advanceState();
-                    }
-                } else if (healingState == Healing.HealingState.POTTING) {
-                    healing.pot();
-                }
-                movement.retreat(); // Always retreat while healing
+                healing.updatePotMacro(target);
+                movement.sprint(); // Always retreat while healing
                 break;
 
             case SPEED:
@@ -143,7 +134,7 @@ public class ProjectLipsy {
 
         // Health check for retreating/healing
         if (this.mc.thePlayer.getHealth() <= 10) {
-            if (healing.canPot()) {
+            if (healing.canPot() && utils.hasItem("Splash Potion of Healing")) {
                 healing.startHealingSequence();
                 status = Status.HEAL;
             } else {

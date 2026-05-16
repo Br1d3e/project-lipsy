@@ -78,7 +78,7 @@ public class Movement {
         return (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90);
     }
 
-    public void retreat() {
+    public void sprint() {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), true);
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindSprint.getKeyCode(), true);
     }

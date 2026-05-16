@@ -29,6 +29,7 @@ public class Blockhit {
     private int tickIndex = 0;
     private int lastAttackTick = -100000;
     private int lastDamageTick = -100000;
+    private int observedSwordBlockTicks = 0;
     private float previousSwingProgress = 0.0F;
 
     public Blockhit(Minecraft mc) {
@@ -39,14 +40,15 @@ public class Blockhit {
         tickIndex++;
 
         if (mc.thePlayer == null) {
-            stopBlocking("no player");
+            stopBlocking("no player", true);
             return;
         }
 
         updateRecentSignals();
+        updateObservedBlockTicks();
 
         if (target == null) {
-            stopBlocking("target missing");
+            stopBlocking("target missing", true);
             return;
         }
 
@@ -54,21 +56,25 @@ public class Blockhit {
         float yawDiffToTarget = getYawDiffToTarget(target);
         boolean holdingSword = isHoldingSword();
 
+        if (state == State.IDLE && isUseItemDown() && holdingSword) {
+            stopBlocking("stale sword block", true);
+        }
+
         if (state == State.BLOCKING) {
             if (!holdingSword) {
-                stopBlocking("not holding sword");
+                stopBlocking("not holding sword", true);
                 return;
             }
             if (utilityActive || isUsingUtilityItem()) {
-                stopBlocking("utility item");
+                stopBlocking("utility item", true);
                 return;
             }
             if (distance > CANCEL_MAX_DISTANCE) {
-                stopBlocking("distance");
+                stopBlocking("distance", true);
                 return;
             }
             if (Math.abs(yawDiffToTarget) > CANCEL_MAX_YAW_DIFF) {
-                stopBlocking("aim lost");
+                stopBlocking("aim lost", true);
                 return;
             }
 
@@ -91,7 +97,11 @@ public class Blockhit {
     }
 
     public void cancel(String reason) {
-        stopBlocking(reason);
+        stopBlocking(reason, true);
+    }
+
+    public int getObservedSwordBlockTicks() {
+        return observedSwordBlockTicks;
     }
 
     private boolean shouldStartBlockhit(EntityPlayer target, double distance, float yawDiffToTarget,
@@ -149,15 +159,24 @@ public class Blockhit {
     private void releaseBlocking() {
         state = State.IDLE;
         blockTicksLeft = 0;
+        observedSwordBlockTicks = 0;
         holdUseItem(false);
         System.out.println("[Project Lipsy] BlockHit RELEASE");
     }
 
-    private void stopBlocking(String reason) {
-        if (state != State.BLOCKING) return;
+    private void stopBlocking(String reason, boolean forceReleaseUseItem) {
+        boolean wasBlocking = state == State.BLOCKING;
+        boolean shouldReleaseStaleSwordBlock = forceReleaseUseItem
+                && isUseItemDown()
+                && (mc.thePlayer == null || isHoldingSword());
+        if (!wasBlocking && !shouldReleaseStaleSwordBlock) return;
+
         state = State.IDLE;
         blockTicksLeft = 0;
-        holdUseItem(false);
+        observedSwordBlockTicks = 0;
+        if (forceReleaseUseItem) {
+            holdUseItem(false);
+        }
         System.out.println("[Project Lipsy] BlockHit CANCEL reason=" + reason);
     }
 
@@ -177,6 +196,14 @@ public class Blockhit {
         }
     }
 
+    private void updateObservedBlockTicks() {
+        if (isUseItemDown() && isHoldingSword()) {
+            observedSwordBlockTicks++;
+        } else {
+            observedSwordBlockTicks = 0;
+        }
+    }
+
     private boolean isHoldingSword() {
         ItemStack stack = mc.thePlayer.getHeldItem();
         return stack != null && stack.getItem() instanceof ItemSword;
@@ -185,6 +212,10 @@ public class Blockhit {
     private boolean isUsingUtilityItem() {
         if (!mc.thePlayer.isUsingItem()) return false;
         return !isHoldingSword();
+    }
+
+    private boolean isUseItemDown() {
+        return mc.gameSettings.keyBindUseItem.isKeyDown();
     }
 
     private String chooseStartReason(EntityPlayer target) {
