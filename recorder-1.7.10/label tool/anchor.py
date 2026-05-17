@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import gzip
 import json
 import math
 
@@ -14,6 +15,8 @@ ANCHOR_COOLDOWN_TICKS = 20
 ATTACK_MERGE_GAP_TICKS = 3 * 20
 ATTACK_PRE_TICKS = 10
 ATTACK_POST_TICKS = 30
+FRONT_YAW_DIFF_DEGREES = 20.0
+TURN_YAW_DIFF_DEGREES = 140.0
 
 
 def parse_args():
@@ -28,11 +31,25 @@ def parse_args():
 def read_jsonl(path):
     if not path.exists():
         return pd.DataFrame()
-    # return pd.read_json(path, lines=True)
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        if path.suffix == ".gz":
-            return pd.read_json(path, lines=True, compression="gzip")
-        return pd.read_json(f, lines=True)
+
+    rows = []
+    bad_lines = 0
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as f:
+        for line_number, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                bad_lines += 1
+                if bad_lines <= 5:
+                    print("Skipping malformed JSONL line %d in %s" % (line_number, path))
+
+    if bad_lines > 5:
+        print("Skipped %d malformed JSONL lines in %s" % (bad_lines, path))
+    return pd.DataFrame(rows)
 
 
 def find_frames_path(session_dir):
@@ -300,6 +317,29 @@ def target_using_item_between(frames, start_tick, end_tick):
     return bool(series_bool(window, "targetUsingItem").any()) if not window.empty else False
 
 
+def yaw_diff_at_tick(frames, tick):
+    row = frame_at_or_before(frames, tick)
+    if row is None or "yawDiffToTarget" not in row or pd.isna(row["yawDiffToTarget"]):
+        return None
+    return float(row["yawDiffToTarget"])
+
+
+def suggested_type_from_yaw(frames, tick, label):
+    yaw_diff = yaw_diff_at_tick(frames, tick)
+    if yaw_diff is None:
+        return None
+
+    abs_yaw_diff = abs(yaw_diff)
+    if abs_yaw_diff >= TURN_YAW_DIFF_DEGREES:
+        return "turn"
+    if abs_yaw_diff <= FRONT_YAW_DIFF_DEGREES:
+        if label == "heal":
+            return "front"
+        if label == "retreat":
+            return "s"
+    return None
+
+
 def anchor_dict(session_id, tick, kind, suggested_label, suggested_type=None,
                 suggested_reward=None, start_offset=PRE_TICKS, end_offset=POST_TICKS,
                 source=None, start_tick=None, end_tick=None, review_policy="review"):
@@ -348,8 +388,10 @@ def generate_healing_anchors(frames, events, session_id, anchors):
         | text.str.contains("healing", regex=False)
     )
     for segment in item_use_segments(frames, health_pot_mask, event_ticks(events, ["POTION_USE"])):
+        suggested_type = suggested_type_from_yaw(frames, segment["tick"], "heal")
         add_anchor(
             anchors, session_id, segment["tick"], "heal_candidate", "heal",
+            suggested_type=suggested_type,
             source="held_potion_segment_use",
             start_tick=segment["start_tick"],
             end_tick=segment["end_tick"],
@@ -362,8 +404,10 @@ def generate_healing_anchors(frames, events, session_id, anchors):
         regen = my_hp.loc[idx] - my_hp.loc[idx - 1] if idx > 0 else 0
         if regen > 2:
             tick = frames[tick_col(frames)].loc[idx]
+            suggested_type = suggested_type_from_yaw(frames, tick, "heal")
             add_anchor(
                 anchors, session_id, tick, "heal_candidate", "heal",
+                suggested_type=suggested_type,
                 source="health_burst",
                 start_tick= tick - 5,
                 end_tick= tick + 5,
@@ -440,6 +484,7 @@ def generate_retreat_anchors(frames, session_id, anchors):
             continue
         add_anchor(
             anchors, session_id, tick, "retreat_candidate", "retreat",
+            suggested_type=suggested_type_from_yaw(frames, tick, "retreat"),
             source="hp_yaw_or_distance_rule",
             start_offset=20,
             end_offset=RETREAT_WINDOW_TICKS,

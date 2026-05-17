@@ -2,6 +2,7 @@ import json
 import math
 import shlex
 from pathlib import Path
+import gzip
 
 import numpy as np
 import pandas as pd
@@ -78,12 +79,25 @@ REVIEW_PRESETS = {
 def read_jsonl(path):
     if not path.exists():
         return pd.DataFrame()
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        if path.suffix == ".gz":
-            return pd.read_json(path, lines=True, compression="gzip")
-        return pd.read_json(f, lines=True)
 
+    rows = []
+    bad_lines = 0
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as f:
+        for line_number, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                bad_lines += 1
+                if bad_lines <= 5:
+                    print("Skipping malformed JSONL line %d in %s" % (line_number, path))
 
+    if bad_lines > 5:
+        print("Skipped %d malformed JSONL lines in %s" % (bad_lines, path))
+    return pd.DataFrame(rows)
 
 def find_frames_path(session_dir):
     gz_path = session_dir / "frames.jsonl.gz"
