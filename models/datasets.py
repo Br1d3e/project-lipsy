@@ -4,12 +4,14 @@ import os
 import pandas as pd
 import numpy as np
 
-FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/recorder-1.7.10/recordings"
-TRAIN_FOLDER = os.path.join(FOLDER, "session_1778405758091")
+TRAIN_FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/recorder-1.7.10/recordings"
+# TRAIN_FOLDER = os.path.join(FOLDER, "session_1778405758091")
 # TRAIN_FOLDER = os.path.join(FOLDER, "session_1778405079341")
 
 FRAMES_NAME = "frames.jsonl.gz"
 LABELS_NAME = "labels.json"
+ROUND_START_TRIM_TICKS = 10
+ROUND_END_TRIM_TICKS = 20
 
 class Datasets:
     def __init__(self, folder):
@@ -67,41 +69,56 @@ class Datasets:
         return frames, labels
 
     def split_rounds(self, frames: pd.DataFrame):
-        # gap = targetExists = false, -100 <= pos <= 100 ～ hold & use fire res potion
+        # Round start: player holds fire resistance before entering the match.
+        # Round end: servers put item.paper in the hotbar as the play-again item.
         rounds = []
-        round_start = -1
-        round_end = -1
-        for idx, frame in frames.iterrows():
-            if round_start != -1 and round_end != -1:
-                round = frames[
-                    (frames["recordingTickIndex"] >= round_start + 10) &
-                    (frames["recordingTickIndex"] <= round_end - 50)
-                    ].copy()
-                rounds.append(round)
-                round_start = -1
-                round_end = -1
+        if frames.empty:
+            return rounds
+
+        frames = frames.sort_values("recordingTickIndex").reset_index(drop=True)
+        ticks = frames["recordingTickIndex"].astype(int)
+        held_items = frames.get("myHeldItem", pd.Series("", index=frames.index)).fillna("").astype(str).str.lower()
+        held_types = frames.get("myHeldItemType", pd.Series("", index=frames.index)).fillna("").astype(str).str.lower()
+        hotbars = frames.get("hotbar", pd.Series("", index=frames.index)).map(self.hotbar_to_text)
+
+        is_fire_res = held_items.str.contains("fire resistance", regex=False) | held_types.str.contains("fire_resistance", regex=False)
+        has_play_again_paper = hotbars.str.contains("item.paper", regex=False)
+        fire_res_start = is_fire_res & ~is_fire_res.shift(1, fill_value=False)
+        paper_start = has_play_again_paper & ~has_play_again_paper.shift(1, fill_value=False)
+
+        round_start = None
+        if "targetExists" in frames.columns and bool(frames["targetExists"].iloc[0]) and not bool(has_play_again_paper.iloc[0]):
+            round_start = int(ticks.iloc[0])
+
+        for idx in frames.index:
+            tick = int(ticks.loc[idx])
+            if round_start is None:
+                if bool(fire_res_start.loc[idx]):
+                    round_start = tick
                 continue
 
-            my_item = frame["myHeldItem"]
-            is_fire_res = "fire resistance" in my_item.lower() if isinstance(my_item, str) else False
-            if round_start == -1 and is_fire_res:
-                round_start = frame["recordingTickIndex"]
-            myPosX = frame["myPosX"]
-            myPosZ = frame["myPosZ"]
-            if pd.isna(myPosX):
-                myPosX = 10000
-            if pd.isna(myPosZ):
-                myPosZ = 10000
-            is_spawn = -100 < myPosX < 100 and -100 < myPosZ < 100
-            # is_target_dead = frame["targetExists"] == False
-            if is_spawn:
-                round_end = frame["recordingTickIndex"]
+            if bool(paper_start.loc[idx]) and tick > round_start:
+                round_end = tick
+                start_tick = round_start + ROUND_START_TRIM_TICKS
+                end_tick = round_end - ROUND_END_TRIM_TICKS
+                if start_tick <= end_tick:
+                    rounds.append(frames[
+                        (frames["recordingTickIndex"] >= start_tick) &
+                        (frames["recordingTickIndex"] <= end_tick)
+                    ].copy())
+                round_start = None
 
-        # print(len(rounds))
         return rounds
+
+    @staticmethod
+    def hotbar_to_text(hotbar):
+        if isinstance(hotbar, list):
+            return " ".join(str(item).lower() for item in hotbar if item is not None)
+        return str(hotbar).lower()
 
     def split_train_val_test(self, rounds):
         round_len = len(rounds)
+        print(round_len)
 
         train_len = int(round_len * 0.80)
         val_len = int(round_len * 0.10)
@@ -124,8 +141,3 @@ class Datasets:
 
     def get_labels(self):
         return self.labels
-
-if __name__ == "__main__":
-    dataset = Datasets(FOLDER)
-    train, val, test = dataset.get_datasets()
-    print(len(train), len(val), len(test))
