@@ -100,4 +100,14 @@ public class utils {
             }
         }
     }
+
+    public float getTargetYaw(EntityPlayer target) {
+        double dx = target.posX - mc.thePlayer.posX;
+        double dz = target.posZ - mc.thePlayer.posZ;
+        return (float) Math.toDegrees(Math.atan2(dz, dx) - 90F);
+    }
+
+    public double getRandomOffset(float range){
+        return (Math.random() * range * 2) - range;
+    }
 }

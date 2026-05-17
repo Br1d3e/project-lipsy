@@ -25,7 +25,14 @@ public class Healing {
         POTTING
     }
 
+    public enum HealingMode {
+        TURN,
+        FRONT,
+        FAST
+    }
+
     private HealingState potState = HealingState.NONE;
+    private HealingMode potMode = HealingMode.TURN;
     private int potTicks = 0;
     private int speedTicks = 0;
     private int eatTicks = 0;
@@ -54,6 +61,9 @@ public class Healing {
             stopUtilityUse();
             potState = HealingState.TURNING;
             potTicks = 0;
+            waitingForCurrentPotExplosion = false;
+            currentPotExploded = false;
+            currentPotEntityIds.clear();
         }
     }
 
@@ -70,20 +80,101 @@ public class Healing {
         updateBotPotionHistory();
         potTicks ++;
 
-        float retreatYaw = movement.getRetreatYaw(target);
+        // distance based pot mode heuristics
+        // replace with classification model
+        double targetDistance = mc.thePlayer.getDistanceToEntity(target);
+//        if (targetDistance <= 3D) {
+//            if (mc.thePlayer.onGround) {
+//                potMode = HealingMode.TURN;
+//                mc.thePlayer.sendChatMessage("Turn Pot");
+//                turnPot(target);
+//            } else {
+//                potMode = HealingMode.FAST;
+//                mc.thePlayer.sendChatMessage("Fast Pot");
+//                fastPot(target);
+//            }
+//        } else
         if (potTicks == 1) {
-            mc.thePlayer.rotationYaw = retreatYaw - 150F;
-            potState = HealingState.TURNING;
+//            potMode = targetDistance < 6D ? HealingMode.TURN : HealingMode.FRONT;
+            if (targetDistance <= 3D) {
+                potMode = mc.thePlayer.onGround ? HealingMode.TURN : HealingMode.FAST;
+            } else if (targetDistance < 5D) {
+                potMode = HealingMode.TURN;
+            } else {
+                potMode = HealingMode.FRONT;
+            }
+        }
+
+        if (potMode == HealingMode.TURN) {
+            turnPot(target);
+        } else if (potMode == HealingMode.FRONT) {
+            frontPot(target);
+        } else {
+            fastPot(target);
+        }
+
+        if (currentPotExploded) {
+            stopPotting();
+        }
+    }
+
+    private void frontPot(EntityPlayer target) {
+        if (potState == HealingState.NONE || potMode != HealingMode.FRONT || target == null || mc.thePlayer == null) {
+            return;
+        }
+
+        double yawOffset = utils.getRandomOffset(5F);
+        float lookYaw = utils.getTargetYaw(target) + (float) yawOffset;
+        movement.sprint();
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), false);
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindRight.getKeyCode(), false);
+
+        if (potTicks == 1) {
+            mc.thePlayer.rotationYaw = lookYaw;
+            mc.thePlayer.rotationPitch = 8F;
+            mc.thePlayer.sendChatMessage("Front Pot");
         } else if (potTicks == 2) {
-            mc.thePlayer.rotationYaw = retreatYaw - 80F;
+            mc.thePlayer.rotationPitch = 12F;
+        } else if (potTicks == 5) {
+            potState = HealingState.POTTING;
+            mc.thePlayer.rotationPitch = 20F;
+            utils.switchItem("Splash Potion of Healing");
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
+            KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
+            waitingForCurrentPotExplosion = true;
+            currentPotExploded = false;
+            currentPotEntityIds.clear();
+        } else if (potTicks == 6) {
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
+            lastPotTime = System.currentTimeMillis();
+        }
+    }
+
+    private void turnPot(EntityPlayer target) {
+        if (potState == HealingState.NONE || potMode != HealingMode.TURN || target == null || mc.thePlayer == null) {
+            return;
+        }
+
+        movement.sprint();
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), false);
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindRight.getKeyCode(), false);
+
+        float retreatYaw = movement.getRetreatYaw(target);
+        boolean isLeft = Math.random() < 0.5;
+        if (potTicks == 1) {
+            mc.thePlayer.rotationYaw = isLeft ? retreatYaw + 150F : retreatYaw - 150F;
+            potState = HealingState.TURNING;
+            mc.thePlayer.sendChatMessage("Turn Pot " + (isLeft ? "left" : "right"));
+        } else if (potTicks == 2) {
+            mc.thePlayer.rotationYaw = isLeft ? retreatYaw + 80F : retreatYaw - 80F;
             mc.thePlayer.rotationPitch = 10F;
         } else if (potTicks == 3) {
-            mc.thePlayer.rotationYaw = retreatYaw - 20F;
+            mc.thePlayer.rotationYaw = isLeft ? retreatYaw + 20F : retreatYaw - 20F;
             mc.thePlayer.rotationPitch = 20F;
         } else if (potTicks == 4) {
             mc.thePlayer.rotationYaw = retreatYaw;
-            mc.thePlayer.rotationPitch = 30F;
-        } else if (potTicks == 5) {
+            mc.thePlayer.rotationPitch = mc.thePlayer.onGround ? 30F : 40F;
+        } else if (potTicks == 6) {
             utils.switchItem("Splash Potion of Healing");
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
@@ -91,11 +182,49 @@ public class Healing {
             waitingForCurrentPotExplosion = true;
             currentPotExploded = false;
             currentPotEntityIds.clear();
-        } else if (potTicks == 6) {
+        } else if (potTicks == 7) {
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
             lastPotTime = System.currentTimeMillis();
-        } else if (currentPotExploded) {
-            stopPotting();
+        }
+    }
+
+    private void fastPot(EntityPlayer target) {
+        if (potState == HealingState.NONE || potMode != HealingMode.FAST || target == null || mc.thePlayer == null) {
+            return;
+        }
+
+        double yawOffset = utils.getRandomOffset(5F);
+        float targetYaw = utils.getTargetYaw(target) + (float) yawOffset;
+        float retreatYaw = movement.getRetreatYaw(target);
+
+        if (potTicks == 1) {
+            mc.thePlayer.rotationYaw = targetYaw;
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), true);
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), true);
+            mc.thePlayer.sendChatMessage("Fast Pot");
+        } else if (potTicks == 2) {
+            potState = HealingState.TURNING;
+            mc.thePlayer.rotationYaw = retreatYaw + 90F;
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
+            mc.thePlayer.rotationPitch = 20F;
+        } else if (potTicks == 3) {
+            mc.thePlayer.rotationYaw = retreatYaw;
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), false);
+            movement.sprint();
+            mc.thePlayer.rotationPitch = 45F;
+        } else if (potTicks == 4) {
+            utils.switchItem("Splash Potion of Healing");
+            movement.sprint();
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
+            KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
+            potState = HealingState.POTTING;
+            waitingForCurrentPotExplosion = true;
+            currentPotExploded = false;
+            currentPotEntityIds.clear();
+        } else if (potTicks == 6) {
+            movement.sprint();
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
+            lastPotTime = System.currentTimeMillis();
         }
     }
 

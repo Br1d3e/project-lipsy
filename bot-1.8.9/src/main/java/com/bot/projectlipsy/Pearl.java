@@ -8,6 +8,7 @@ public class Pearl {
 
     private final Minecraft mc;
     private final utils utils;
+    private final long PEARL_COOLDOWN = 16000L;
     private long lastPearlTime = 0;
 
     public Pearl(Minecraft mc) {
@@ -17,8 +18,7 @@ public class Pearl {
 
     public boolean canThrowPearl() {
         long currentTime = System.currentTimeMillis();
-        long pearlCooldown = 16000; // 16 second cooldown
-        return currentTime - lastPearlTime >= pearlCooldown;
+        return currentTime - lastPearlTime >= PEARL_COOLDOWN;
     }
 
     public void tryhardPearl(EntityPlayer target) {
@@ -34,7 +34,7 @@ public class Pearl {
             float pitch = (float) -Math.toDegrees(Math.atan2(dy, distance));
 
             mc.thePlayer.rotationYaw = yaw;
-            mc.thePlayer.rotationPitch = pitch;
+            mc.thePlayer.rotationPitch = pitch + 10F;
 
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
             lastPearlTime = System.currentTimeMillis();

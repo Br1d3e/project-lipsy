@@ -6,6 +6,8 @@ import net.minecraft.util.MathHelper;
 
 public class Aiming {
     private final Minecraft mc;
+    private final utils utils;
+
     double lastMsgMs = System.currentTimeMillis();
     String lastMode = "";
     private boolean modelLocked = false;
@@ -20,14 +22,14 @@ public class Aiming {
 
     private static final double MODEL_MIN_DISTANCE = 0.5;
     private static final int MIN_RECOVER_TICKS = 5;
-    public Aiming(Minecraft mc) { this.mc = mc; }
+    public Aiming(Minecraft mc) { this.mc = mc; this.utils = new utils(mc); }
 
     public void update(Entity target, float[] actions) {
         if (mc.thePlayer == null || target == null) return;
 
-        double xOffset = getRandomOffset(0.05f);
-        double yOffset = getRandomOffset(0.05f);
-        double zOffset = getRandomOffset(0.05f);
+        double xOffset = utils.getRandomOffset(0.08f);
+        double yOffset = utils.getRandomOffset(0.05f);
+        double zOffset = utils.getRandomOffset(0.08f);
 
         double dx = (target.posX + xOffset) - mc.thePlayer.posX;
         double dy = (target.posY + yOffset) - (mc.thePlayer.posY) - 0.6F;
@@ -69,17 +71,17 @@ public class Aiming {
 
         // Recovery mode
         if (!modelLocked || !hasModel) {
-            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 30f));
-            mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, pitch, 30f));
+            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 20f));
+            mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, pitch, 10f));
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-            if (!lastMode.equals("w/o")) {
-                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
-                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
-                mc.thePlayer.sendChatMessage(testMsg);
-                lastMsgMs = System.currentTimeMillis();
-                lastMode = "w/o";
-            }
+//            if (!lastMode.equals("w/o")) {
+//                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
+//                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
+//                mc.thePlayer.sendChatMessage(testMsg);
+//                lastMsgMs = System.currentTimeMillis();
+//                lastMode = "w/o";
+//            }
 
         // aim with model
         } else {
@@ -91,14 +93,14 @@ public class Aiming {
             float desiredPitch = mc.thePlayer.rotationPitch + predictedDeltaPitch;
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-            if (!lastMode.equals("/w")) {
-                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
-                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
-                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
-                mc.thePlayer.sendChatMessage(testMsg);
-                lastMsgMs = System.currentTimeMillis();
-                lastMode = "/w";
-            }
+//            if (!lastMode.equals("/w")) {
+//                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
+//                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
+//                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
+//                mc.thePlayer.sendChatMessage(testMsg);
+//                lastMsgMs = System.currentTimeMillis();
+//                lastMode = "/w";
+//            }
 
             mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, desiredYaw, 30f));
             mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, desiredPitch, 30f));
@@ -126,7 +128,4 @@ public class Aiming {
         return pitch;
     }
 
-    private double getRandomOffset(float range){
-        return (Math.random() * range * 2) - range;
-    }
 }

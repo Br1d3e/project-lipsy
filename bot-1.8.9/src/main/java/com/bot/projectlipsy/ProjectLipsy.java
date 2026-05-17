@@ -103,7 +103,7 @@ public class ProjectLipsy {
                     break;
                 }
                 healing.updatePotMacro(target);
-                movement.sprint(); // Always retreat while healing
+//                movement.sprint(); // Always retreat while healing
                 break;
 
             case SPEED:
