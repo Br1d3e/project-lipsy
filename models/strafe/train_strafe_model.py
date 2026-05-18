@@ -20,7 +20,7 @@ SEQ_LEN = 5
 BATCH_SIZE = 128
 EPOCHS = 100
 LEARNING_RATE = 1e-3
-CLASS_WEIGHTS = torch.tensor([1.5, 1, 1.2])
+CLASS_WEIGHTS = torch.tensor([1.9, 1, 1.5])
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -91,8 +91,17 @@ def save_model_checkpoint(model, save_path, checkpoint_meta=None):
     torch.save(checkpoint, save_path)
 
 
+def get_X_Y(dataset):
+    X = []
+    Y = []
+    for i in range(len(dataset)):
+        x, y = dataset[i]
+        X.append(x)
+        Y.append(y)
+    return torch.stack(X), torch.stack(Y)
+
 def print_class_distribution(dataset, name):
-    ys = torch.stack(dataset.Y)
+    ys = get_X_Y(dataset)[1]
     cls = strafe_to_class(ys).numpy()
     unique, counts = np.unique(cls, return_counts=True)
     print(f"\n{name} class distribution:")
@@ -232,13 +241,13 @@ if __name__ == "__main__":
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
     output_dim = 3
-    model_name = "1dCNN 2"
-    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> avg pool 1 -> linear 64 -> linear 32 -> 2"
+    model_name = "stacked MLP 6"
+    architecture = f"{input_dim}-> 256 -> 128 -> 64 -> 3"
 
     # model = StrafeStackedMLP(input_dim=input_dim, output_dim=output_dim)
     model = Strafe1dCNN(input_dim=feature_dim, output_dim=output_dim)
 
-    model_path = os.path.join(BASE_DIR, "strafe_cnn_2.pth")
+    model_path = os.path.join(BASE_DIR, "strafe_stacked_mlp_6.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

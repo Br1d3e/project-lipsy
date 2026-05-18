@@ -331,7 +331,7 @@ if __name__ == "__main__":
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
-    model_name = "1dCNN 6"
+    model_name = "1dCNN 7"
     architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> avg pool 1 -> linear 128 -> linear 64 -> 2"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
@@ -340,7 +340,7 @@ if __name__ == "__main__":
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
     model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2)
 
-    model_path = os.path.join(BASE_DIR, "aim_cnn_6.pth")
+    model_path = os.path.join(BASE_DIR, "aim_cnn_7.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

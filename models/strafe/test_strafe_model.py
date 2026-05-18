@@ -18,7 +18,8 @@ try:
         SEQ_LEN,
         get_device,
         print_class_distribution,
-        strafe_to_class
+        strafe_to_class,
+        get_X_Y
     )
 except ModuleNotFoundError:
     from models.strafe.train_strafe_model import (
@@ -28,13 +29,13 @@ except ModuleNotFoundError:
         SEQ_LEN,
         get_device,
         print_class_distribution,
-        strafe_to_class,
+        strafe_to_class, get_X_Y,
 )
 from models.window_dataset import WindowDataset
 from models.strafe.strafe_datasets import StrafeDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "strafe_cnn_2.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "strafe_stacked_mlp_5.pth")
 
 MODEL_CLASSES = {
     "StrafeStackedMLP": StrafeStackedMLP,
@@ -60,7 +61,7 @@ def load_model(path, device):
 
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model_class_name = checkpoint.get("model_class", "Strafe1dCNN")
+        model_class_name = checkpoint.get("model_class", "StrafeStackedMLP")
         model_class = MODEL_CLASSES[model_class_name]
         model = model_class(
             input_dim=checkpoint_model_input_dim(model_class_name, checkpoint),
@@ -159,7 +160,7 @@ def evaluate_model():
     y_true, y_pred = collect_predictions(model, loader, device)
     y_actions = logits_to_a_strafe(y_pred)
 
-    baseline_rule(test_dataset)
+    # baseline_rule(test_dataset)
     print_switch_metrics(y_pred, test_dataset)
 
     print_metrics(y_true, y_pred)
@@ -169,19 +170,17 @@ def evaluate_model():
     # plot_axis(y_true, y_actions)
 
 def baseline_rule(dataset):
-    X = torch.stack(dataset.X).numpy()
-    Y = torch.stack(dataset.Y).numpy()
-    x = X[:, -1, :]
-    y_true = Y.reshape(-1)
+    X, Y = get_X_Y(dataset)
+    x = X[:, -1, :].numpy()
+    y_true = Y.reshape(-1).numpy()
     y_rule = np.round(x[:, 6]).reshape(-1)
     print(np.mean(y_true == y_rule))
     return y_rule
 
 def print_switch_metrics(y_pred, dataset):
-    X = torch.stack(dataset.X).numpy()
-    Y = torch.stack(dataset.Y).numpy()
-    x = X[:, -1, :]
-    y_true = Y.reshape(-1)
+    X, Y = get_X_Y(dataset)
+    x = X[:, -1, :].numpy()
+    y_true = Y.reshape(-1).numpy()
 
     prev = x[:, 6].reshape(-1)
 
@@ -194,16 +193,29 @@ def print_switch_metrics(y_pred, dataset):
 
     baseline_pred = prev
     print("baseline overall:", np.mean(baseline_pred == y_true))
-    print("baseline keep:", np.mean(baseline_pred[keep_mask] == y_true[keep_mask]))
-    print("baseline switch:", np.mean(baseline_pred[switch_mask] == y_true[switch_mask]))
+    print("baseline keep:", safe_mean(baseline_pred[keep_mask] == y_true[keep_mask]))
+    print("baseline switch:", safe_mean(baseline_pred[switch_mask] == y_true[switch_mask]))
 
     y_actions = logits_to_a_strafe(y_pred)
     print("model overall:", np.mean(y_actions == y_true))
-    print("model keep:", np.mean(y_actions[keep_mask] == y_true[keep_mask]))
-    print("model switch:", np.mean(y_actions[switch_mask] == y_true[switch_mask]))
-    print(f"model switch confidence: avg={np.mean(pred_confidence(y_pred[switch_mask])):.4f} "
-          f"max={np.max(pred_confidence(y_pred[switch_mask])):.4f} "
-          f"min={np.min(pred_confidence(y_pred[switch_mask])):.4f}")
+    print("model keep:", safe_mean(y_actions[keep_mask] == y_true[keep_mask]))
+    print("model switch:", safe_mean(y_actions[switch_mask] == y_true[switch_mask]))
+    switch_confidence = pred_confidence(y_pred[switch_mask])
+    print(f"model switch confidence: avg={safe_mean(switch_confidence):.4f} "
+          f"max={safe_max(switch_confidence):.4f} "
+          f"min={safe_min(switch_confidence):.4f}")
+
+
+def safe_mean(values):
+    return float(np.mean(values)) if len(values) else float("nan")
+
+
+def safe_max(values):
+    return float(np.max(values)) if len(values) else float("nan")
+
+
+def safe_min(values):
+    return float(np.min(values)) if len(values) else float("nan")
 
 def pred_confidence(y_pred):
     y_pred = torch.tensor(y_pred)

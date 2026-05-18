@@ -1,6 +1,3 @@
-import numpy as np
-import pandas as pd
-
 from models.datasets import Datasets
 from models.datasets import TRAIN_FOLDER
 
@@ -18,7 +15,7 @@ TARGETS = ["myDeltaYaw", "myDeltaPitch"]
 
 class AimDataset:
     def __init__(self, feature_mode = "MLP"):
-        self.datasets = Datasets(TRAIN_FOLDER)
+        self.datasets = Datasets(TRAIN_FOLDER, keep_frames=False)
         self.train_data = self.datasets.get_train_data()
         self.val_data = self.datasets.get_val_data()
         self.test_data = self.datasets.get_test_data()
@@ -28,48 +25,11 @@ class AimDataset:
         elif feature_mode == "RNN":
             self.feature_list = FEATURES_HISTORY
 
-    def make_windows(self, rounds: list[pd.DataFrame], seq_len = 1, stride = 1):
-        windows = []
-        for round_df in rounds:
-            round_df = round_df.set_index("recordingTickIndex", drop=False)
-            round_start = round_df["recordingTickIndex"].min()
-            round_end = round_df["recordingTickIndex"].max()
-            for label in self.labels:
-                label_name = label["label"].strip().lower()
-                if label_name == "attack":
-                    label_start = label["start_tick"]
-                    label_end = label["end_tick"]
-
-                    overlap_start = max(round_start, label_start)
-                    overlap_end = min(round_end, label_end)
-
-                    if overlap_start >= overlap_end:
-                        continue
-
-                    available = round_df[np.logical_and(overlap_start <= round_df["recordingTickIndex" ], round_df["recordingTickIndex"] <= overlap_end)]
-                    available = available.sort_index()
-                    available = available[
-                        (available["targetExists"] == True) &
-                        np.isfinite(available[self.feature_list + TARGETS]).all(axis=1)
-                    ]
-
-                    if len(available) <= seq_len:
-                        continue
-                    for i in range(0, len(available) - seq_len, stride):
-                        window = available.iloc[i:i + seq_len]
-                        target = available.iloc[i + seq_len][TARGETS]
-                        windows.append((window, target))
-        return windows
+    def make_windows(self, rounds, seq_len = 1, stride = 1):
+        return self.datasets.make_windows(rounds, self.feature_list, TARGETS, seq_len, stride)
 
     def get_features_targets(self, rounds, seq_len = 1, stride = 1):
-        data_windows = []
-        windows = self.make_windows(rounds, seq_len, stride)
-        for window, target in windows:
-            feature = window[self.feature_list].to_numpy(dtype=np.float32)
-            target = target.to_numpy(dtype=np.float32)
-            data_windows.append((feature, target))
-
-        return data_windows
+        return self.make_windows(rounds, seq_len, stride)
 
     def get_train_windows(self, seq_len = 1, stride = 1):
         return self.get_features_targets(self.train_data, seq_len, stride)

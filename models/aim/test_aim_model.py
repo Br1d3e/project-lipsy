@@ -34,7 +34,7 @@ from models.window_dataset import WindowDataset
 from models.aim.aim_datasets import AimDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_6.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_7.pth")
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
