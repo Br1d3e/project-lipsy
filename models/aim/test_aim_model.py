@@ -34,7 +34,7 @@ from models.window_dataset import WindowDataset
 from models.aim.aim_datasets import AimDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_7.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_10.pth")
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
@@ -209,19 +209,33 @@ def evaluate_axis(axis):
 
     yaw_pred = y_pred[:, 0]
     yaw_ae = np.abs(yaw_true - yaw_pred)
-    max_ae_idx = np.argmax(yaw_ae)
-    print(f"Max yaw ae: yaw_pred = {yaw_pred[max_ae_idx]} | yaw_true = {yaw_true[max_ae_idx]} | ae = {yaw_ae[max_ae_idx]}")
-    x_max_ae = loader.dataset.X[max_ae_idx].numpy()
-    last_tick_features = x_max_ae[-1]
-    yaw_diff = last_tick_features[14]
-    pitch_diff = last_tick_features[15]
-    distance = last_tick_features[10]
-    history_start = max(0, max_ae_idx - 5)
-    history = np.stack([x.numpy() for x in loader.dataset.X[history_start:max_ae_idx]])
-    print(
-        f"yawDiff={yaw_diff} | pitchDiff={pitch_diff} | distance={distance} | "
-        # f"\nfeatures prev windows: {history}"
-    )
+    # max_ae_idx = np.argmax(yaw_ae)
+    # print(f"Max yaw ae: yaw_pred = {yaw_pred[max_ae_idx]} | yaw_true = {yaw_true[max_ae_idx]} | ae = {yaw_ae[max_ae_idx]}")
+    # x_max_ae = loader.dataset.X[max_ae_idx].numpy()
+    # last_tick_features = x_max_ae[-1]
+    # yaw_diff = last_tick_features[14]
+    # pitch_diff = last_tick_features[15]
+    # distance = last_tick_features[10]
+    # history_start = max(0, max_ae_idx - 5)
+    # history = np.stack([x.numpy() for x in loader.dataset.X[history_start:max_ae_idx]])
+    # print(
+    #     f"yawDiff={yaw_diff} | pitchDiff={pitch_diff} | distance={distance} | "
+    #     # f"\nfeatures prev windows: {history}"
+    # )
+    large_ae = np.argsort(yaw_ae)[::-1][:10]
+    for i in range(len(large_ae)):
+        large_ae_idx = large_ae[i]
+        x = loader.dataset.X[large_ae_idx].numpy()
+        last_tick_features = x[-1]
+        yaw_diff = last_tick_features[14]
+        pitch_diff = last_tick_features[15]
+        distance = last_tick_features[10]
+        history_start = max(0, large_ae_idx - 5)
+        history = np.stack([x.numpy() for x in loader.dataset.X[history_start:large_ae_idx]])
+        print(
+            f"large #{i+1} | ae={yaw_ae[large_ae_idx]} | yawDiff={yaw_diff} | pitchDiff={pitch_diff} | distance={distance} | "
+            # f"\nfeatures prev windows: {history} \n"
+        )
 
 
     plot_axis(axis, y_true_axis, y_pred_axis)

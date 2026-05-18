@@ -241,13 +241,13 @@ if __name__ == "__main__":
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
     output_dim = 3
-    model_name = "stacked MLP 6"
+    model_name = "stacked MLP 5"
     architecture = f"{input_dim}-> 256 -> 128 -> 64 -> 3"
 
-    # model = StrafeStackedMLP(input_dim=input_dim, output_dim=output_dim)
-    model = Strafe1dCNN(input_dim=feature_dim, output_dim=output_dim)
+    model = StrafeStackedMLP(input_dim=input_dim, output_dim=output_dim)
+    # model = Strafe1dCNN(input_dim=feature_dim, output_dim=output_dim)
 
-    model_path = os.path.join(BASE_DIR, "strafe_stacked_mlp_6.pth")
+    model_path = os.path.join(BASE_DIR, "strafe_cnn_3.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

@@ -16,7 +16,7 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 
 
-SEQ_LEN = 5
+SEQ_LEN = 15
 BATCH_SIZE = 128
 EPOCHS = 100
 LEARNING_RATE = 1e-3
@@ -31,7 +31,7 @@ models_dir = os.path.join(BASE_DIR, "models/aim")
 
 
 class AimLSTM(nn.Module):
-    def __init__(self, input_dim=20, hidden_dim=128, num_layers=2, output_dim=2):
+    def __init__(self, input_dim=16, hidden_dim=128, num_layers=2, output_dim=2):
         super().__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
         self.fc = nn.Sequential(
@@ -45,7 +45,7 @@ class AimLSTM(nn.Module):
         return self.fc(out[:, -1, :])
 
 class AimGRU(nn.Module):
-    def __init__(self, input_dim=20, hidden_dim=32, num_layers=1, output_dim=2):
+    def __init__(self, input_dim=16, hidden_dim=32, num_layers=1, output_dim=2):
         super().__init__()
         self.gru = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
         self.fc = nn.Sequential(
@@ -59,7 +59,7 @@ class AimGRU(nn.Module):
         return self.fc(out[:, -1, :])
 
 class AimSimpleMLP(nn.Module):
-    def __init__(self, input_dim=20, output_dim=2):
+    def __init__(self, input_dim=16, output_dim=2):
         super().__init__()
         self.layers = nn.Sequential(
             nn.Linear(input_dim, 64),
@@ -145,9 +145,17 @@ def weighted_aim_loss(pred, target, criterion):
     pitch_loss = loss_by_axis[:, 1].mean()
     return (YAW_WEIGHT * yaw_loss + PITCH_WEIGHT * pitch_loss)
 
+def get_X_Y(dataset):
+    X = []
+    Y = []
+    for i in range(len(dataset)):
+        x, y = dataset[i]
+        X.append(x)
+        Y.append(y)
+    return torch.stack(X), torch.stack(Y)
 
 def print_target_clamp_suggestions(dataset):
-    targets = torch.stack(dataset.Y).numpy()
+    targets = get_X_Y(dataset)[1]
     yaw = targets[:, 0]
     pitch = targets[:, 1]
     print("Suggested inference clamps from train targets:")
@@ -331,16 +339,16 @@ if __name__ == "__main__":
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
-    model_name = "1dCNN 7"
-    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> avg pool 1 -> linear 128 -> linear 64 -> 2"
+    model_name = "1dCNN 10"
+    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> 512 -> avg pool 1 -> linear 256 -> linear 128 -> linear 64 -> 2"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
     # model = AimStackedMLP(input_dim=input_dim, output_dim=2)
     # model = AimLSTM(input_dim=sample_x.shape[-1], output_dim=2)
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
-    model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2)
+    model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2, conv_channels=[32, 64, 128, 256, 512], linear_channels=[256, 128, 64])
 
-    model_path = os.path.join(BASE_DIR, "aim_cnn_7.pth")
+    model_path = os.path.join(BASE_DIR, "aim_cnn_10.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

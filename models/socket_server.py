@@ -20,7 +20,7 @@ sys.path.insert(0, STRAFE_DIR)
 from aim.train_aim_model import Aim1dCNN, AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
 from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
 
-from strafe.train_strafe_model import StrafeStackedMLP
+from strafe.train_strafe_model import Strafe1dCNN, StrafeStackedMLP
 from strafe.train_strafe_model import SEQ_LEN as STRAFE_SEQ_LEN
 
 
@@ -39,12 +39,13 @@ MODEL_CLASSES = {
     "AimLSTM": AimLSTM,
     "AimGRU": AimGRU,
     "Aim1dCNN": Aim1dCNN,
-    "StrafeStackedMLP": StrafeStackedMLP
+    "StrafeStackedMLP": StrafeStackedMLP,
+    "Strafe1dCNN": Strafe1dCNN,
 }
 
 
 def checkpoint_model_input_dim(model_class_name, checkpoint, fallback_input_dim):
-    if model_class_name == "Aim1dCNN":
+    if model_class_name.endswith("1dCNN"):
         conv_weight = checkpoint["model_state_dict"].get("layers.0.weight")
         if conv_weight is not None:
             return int(conv_weight.shape[1])
@@ -79,7 +80,8 @@ def checkpoint_cnn_layout(checkpoint):
     return conv_channels, linear_channels, relu_after_final_conv
 
 
-def load_model(path: str, input_dim: int, output_dim: int):
+def load_model(path: str, input_dim: int, output_dim: int, default_model_class_name="Aim1dCNN",
+               expected_model_class_name=None):
     main_module = sys.modules.get("__main__")
     if main_module is not None:
         for name, model_class in MODEL_CLASSES.items():
@@ -87,8 +89,14 @@ def load_model(path: str, input_dim: int, output_dim: int):
 
     loaded = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(loaded, dict) and "model_state_dict" in loaded:
-        model_class_name = loaded.get("model_class", "Aim1dCNN")
-        model_class = MODEL_CLASSES.get(model_class_name, Aim1dCNN)
+        model_class_name = loaded.get("model_class", default_model_class_name)
+        if expected_model_class_name is not None and model_class_name != expected_model_class_name:
+            raise ValueError(
+                "Checkpoint %s has model_class=%s, expected %s. "
+                "Retrain or point MODEL_PATH at the correct checkpoint."
+                % (path, model_class_name, expected_model_class_name)
+            )
+        model_class = MODEL_CLASSES[model_class_name]
         kwargs = {
             "input_dim": checkpoint_model_input_dim(model_class_name, loaded, input_dim),
             "output_dim": loaded.get("output_dim", output_dim),
@@ -103,19 +111,20 @@ def load_model(path: str, input_dim: int, output_dim: int):
         model.checkpoint_meta = loaded
         return model
     if isinstance(loaded, OrderedDict):
-        model = Aim1dCNN(input_dim=input_dim, output_dim=output_dim)
+        model_class = MODEL_CLASSES[default_model_class_name]
+        model = model_class(input_dim=input_dim, output_dim=output_dim)
         model.load_state_dict(loaded)
         return model
     return loaded
 
 AIM_MODEL_CONFIG = {
-    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_6.pth"),
+    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_8.pth"),
     "INPUT_DIM" : AIM_FEATURE_SIZE * AIM_SEQ_LEN,
     "OUTPUT_DIM": AIM_ACTION_SIZE
 }
 
 STRAFE_MODEL_CONFIG = {
-    "MODEL_PATH": os.path.join(STRAFE_DIR, "strafe_stacked_mlp_1.pth"),
+    "MODEL_PATH": os.path.join(STRAFE_DIR, "strafe_cnn_3.pth"),
     "INPUT_DIM": STRAFE_FEATURE_SIZE * STRAFE_SEQ_LEN,
     "OUTPUT_DIM": STRAFE_OUTPUT_SIZE
 }
@@ -240,6 +249,7 @@ def run_server():
         AIM_MODEL_CONFIG["MODEL_PATH"],
         AIM_MODEL_CONFIG["INPUT_DIM"],
         AIM_MODEL_CONFIG["OUTPUT_DIM"],
+        default_model_class_name="Aim1dCNN",
     )
     aim_model.to(device)
     aim_model.eval()
@@ -248,7 +258,9 @@ def run_server():
     strafe_model = load_model(
         STRAFE_MODEL_CONFIG["MODEL_PATH"],
         STRAFE_MODEL_CONFIG["INPUT_DIM"],
-        STRAFE_MODEL_CONFIG["OUTPUT_DIM"]
+        STRAFE_MODEL_CONFIG["OUTPUT_DIM"],
+        default_model_class_name="Strafe1dCNN",
+        expected_model_class_name="Strafe1dCNN",
     )
     strafe_model.to(device)
     strafe_model.eval()

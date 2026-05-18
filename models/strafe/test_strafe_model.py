@@ -35,7 +35,7 @@ from models.window_dataset import WindowDataset
 from models.strafe.strafe_datasets import StrafeDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "strafe_stacked_mlp_5.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "strafe_cnn_3.pth")
 
 MODEL_CLASSES = {
     "StrafeStackedMLP": StrafeStackedMLP,

@@ -16,12 +16,12 @@ public class Aiming {
     private static final float SENSITIVITY = 1.0F;
 
     private static final float MODEL_ENTER_YAW = 40.0F;
-    private static final float MODEL_EXIT_YAW = 60.0F;
+    private static final float MODEL_EXIT_YAW = 50.0F;
     private static final float MODEL_ENTER_PITCH = 20.0F;
     private static final float MODEL_EXIT_PITCH = 30.0F;
 
     private static final double MODEL_MIN_DISTANCE = 0.5;
-    private static final int MIN_RECOVER_TICKS = 5;
+    private static final int MIN_RECOVER_TICKS = 2;
     public Aiming(Minecraft mc) { this.mc = mc; this.utils = new utils(mc); }
 
     public void update(Entity target, float[] actions) {
@@ -71,17 +71,17 @@ public class Aiming {
 
         // Recovery mode
         if (!modelLocked || !hasModel) {
-            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 20f));
-            mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, pitch, 10f));
+            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, yaw, 100f));
+            mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, pitch, 30f));
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-//            if (!lastMode.equals("w/o")) {
-//                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
-//                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
-//                mc.thePlayer.sendChatMessage(testMsg);
-//                lastMsgMs = System.currentTimeMillis();
-//                lastMode = "w/o";
-//            }
+            if (!lastMode.equals("w/o")) {
+                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
+                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
+                mc.thePlayer.sendChatMessage(testMsg);
+                lastMsgMs = System.currentTimeMillis();
+                lastMode = "w/o";
+            }
 
         // aim with model
         } else {
@@ -93,17 +93,22 @@ public class Aiming {
             float desiredPitch = mc.thePlayer.rotationPitch + predictedDeltaPitch;
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-//            if (!lastMode.equals("/w")) {
-//                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
-//                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
-//                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
-//                mc.thePlayer.sendChatMessage(testMsg);
-//                lastMsgMs = System.currentTimeMillis();
-//                lastMode = "/w";
-//            }
+            if (!lastMode.equals("/w")) {
+                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
+                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
+                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
+                mc.thePlayer.sendChatMessage(testMsg);
+                lastMsgMs = System.currentTimeMillis();
+                lastMode = "/w";
+            }
 
-            mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, desiredYaw, 30f));
-            mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, desiredPitch, 30f));
+            float desiredYawDiff = yaw - desiredYaw;
+            if (MathHelper.wrapAngleTo180_float(Math.abs(desiredYawDiff)) <= MODEL_EXIT_YAW) {
+                mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, desiredYaw, 50f));
+                mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, desiredPitch, 15f));
+            } else {
+                mc.thePlayer.sendChatMessage("[Project Lipsy] desiredYawDiff too large: " + desiredYawDiff);
+            }
         }
     }
 
