@@ -24,6 +24,7 @@ public class ProjectLipsy {
     private Pearl pearl;
     private ModelConnect models;
     private Blockhit blockhit;
+    private Retreat retreat;
 
     private enum Status{
         ATTACK,
@@ -44,7 +45,8 @@ public class ProjectLipsy {
         movement = new Movement(mc);
         aiming = new Aiming(mc);
         clicking = new Clicking(mc);
-        healing = new Healing(mc, movement);
+        retreat = new Retreat(mc, movement);
+        healing = new Healing(mc, movement, retreat);
         utils = new utils(mc);
         pearl = new Pearl(mc);
         models = new ModelConnect(mc);
@@ -92,8 +94,7 @@ public class ProjectLipsy {
                 break;
 
             case RETREAT:
-                mc.thePlayer.rotationYaw = movement.getRetreatYaw(target);
-                movement.sprint();
+                retreat.turn(target);
                 break;
 
             case HEAL:

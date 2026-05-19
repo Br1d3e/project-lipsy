@@ -16,6 +16,7 @@ public class Healing {
     private final Minecraft mc;
     private final utils utils;
     private final Movement movement;
+    private final Retreat retreat;
     private long lastPotTime = 0;
     private static final int MAX_UTILITY_USE_TICKS = 40;
 
@@ -42,10 +43,11 @@ public class Healing {
     private final Set<Integer> seenBotPotionIds = new HashSet<Integer>();
     private final Set<Integer> currentPotEntityIds = new HashSet<Integer>();
 
-    public Healing(Minecraft mc, Movement movement) {
+    public Healing(Minecraft mc, Movement movement, Retreat retreat) {
         this.mc = mc;
         this.utils = new utils(mc);
         this.movement = movement;
+        this.retreat = retreat;
     }
 
     public HealingState getState() {
@@ -159,7 +161,7 @@ public class Healing {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), false);
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindRight.getKeyCode(), false);
 
-        float retreatYaw = movement.getRetreatYaw(target);
+        float retreatYaw = retreat.getRetreatYaw(target);
         boolean isLeft = Math.random() < 0.5;
         if (potTicks == 1) {
             mc.thePlayer.rotationYaw = isLeft ? retreatYaw + 150F : retreatYaw - 150F;
@@ -195,7 +197,7 @@ public class Healing {
 
         double yawOffset = utils.getRandomOffset(5F);
         float targetYaw = utils.getTargetYaw(target) + (float) yawOffset;
-        float retreatYaw = movement.getRetreatYaw(target);
+        float retreatYaw = retreat.getRetreatYaw(target);
 
         if (potTicks == 1) {
             mc.thePlayer.rotationYaw = targetYaw;

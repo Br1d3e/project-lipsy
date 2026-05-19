@@ -71,16 +71,22 @@ public class Movement {
         }
     }
 
-    public float getRetreatYaw(EntityPlayer target) {
-        // Always run directly away from the target for stability
-        double dx = mc.thePlayer.posX - target.posX;
-        double dz = mc.thePlayer.posZ - target.posZ;
-        return (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90);
-    }
-
     public void sprint() {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), true);
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindSprint.getKeyCode(), true);
+    }
+
+    public void jump(){
+        jump(2);
+    }
+
+    public void jump(int durationTicks) {
+        long startTime = System.currentTimeMillis();
+        int durationTime = durationTicks * 20;
+        KeyBinding.onTick(mc.gameSettings.keyBindJump.getKeyCode());
+        if (System.currentTimeMillis() - startTime > durationTime) {
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), false);
+        }
     }
 
     private void testMsg(String msg) {
