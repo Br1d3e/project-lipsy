@@ -11,6 +11,11 @@ import net.minecraft.util.MathHelper;
 import java.util.Random;
 
 public class Blockhit {
+    public enum Mode {
+        MACRO,
+        PREDICTION
+    }
+
     public enum State {
         IDLE,
         BLOCKING
@@ -24,6 +29,7 @@ public class Blockhit {
 
     private final Minecraft mc;
     private final Random random = new Random();
+    private Mode mode;
     private State state = State.IDLE;
     private int blockTicksLeft = 0;
     private int tickIndex = 0;
@@ -33,10 +39,19 @@ public class Blockhit {
     private float previousSwingProgress = 0.0F;
 
     public Blockhit(Minecraft mc) {
+        this(mc, Mode.MACRO);
+    }
+
+    public Blockhit(Minecraft mc, Mode mode) {
         this.mc = mc;
+        this.mode = mode;
     }
 
     public void update(EntityPlayer target, boolean utilityActive) {
+        update(target, utilityActive, null);
+    }
+
+    public void update(EntityPlayer target, boolean utilityActive, float[] actions) {
         tickIndex++;
 
         if (mc.thePlayer == null) {
@@ -58,6 +73,11 @@ public class Blockhit {
 
         if (state == State.IDLE && isUseItemDown() && holdingSword) {
             stopBlocking("stale sword block", true);
+        }
+
+        if (mode == Mode.PREDICTION) {
+            updatePredictionMode(actions, distance, yawDiffToTarget, holdingSword, utilityActive);
+            return;
         }
 
         if (state == State.BLOCKING) {
@@ -92,6 +112,16 @@ public class Blockhit {
         }
     }
 
+    public void setMode(Mode mode) {
+        if (this.mode == mode) return;
+        this.mode = mode;
+        stopBlocking("mode switch", true);
+    }
+
+    public Mode getMode() {
+        return mode;
+    }
+
     public boolean isBlocking() {
         return state == State.BLOCKING;
     }
@@ -102,6 +132,64 @@ public class Blockhit {
 
     public int getObservedSwordBlockTicks() {
         return observedSwordBlockTicks;
+    }
+
+    private void updatePredictionMode(float[] actions, double distance, float yawDiffToTarget,
+                                      boolean holdingSword, boolean utilityActive) {
+        if (state == State.BLOCKING && shouldCancelPredictionBlock(distance, yawDiffToTarget, holdingSword, utilityActive)) {
+            return;
+        }
+
+        boolean predictedBlock = actions != null && actions.length >= 5 && actions[4] >= 0.5F;
+        if (!predictedBlock) {
+            if (state == State.BLOCKING) {
+                releaseBlocking();
+            }
+            return;
+        }
+
+        if (!canPredictionBlock(distance, yawDiffToTarget, holdingSword, utilityActive)) {
+            if (state == State.BLOCKING) {
+                stopBlocking("prediction safety", true);
+            }
+            return;
+        }
+
+        if (state != State.BLOCKING) {
+            startBlocking(1, "prediction");
+        } else {
+            holdUseItem(true);
+        }
+        blockTicksLeft = 1;
+    }
+
+    private boolean shouldCancelPredictionBlock(double distance, float yawDiffToTarget,
+                                                boolean holdingSword, boolean utilityActive) {
+        if (!holdingSword) {
+            stopBlocking("not holding sword", true);
+            return true;
+        }
+        if (utilityActive || isUsingUtilityItem()) {
+            stopBlocking("utility item", true);
+            return true;
+        }
+        if (distance > CANCEL_MAX_DISTANCE) {
+            stopBlocking("distance", true);
+            return true;
+        }
+        if (Math.abs(yawDiffToTarget) > CANCEL_MAX_YAW_DIFF) {
+            stopBlocking("aim lost", true);
+            return true;
+        }
+        return false;
+    }
+
+    private boolean canPredictionBlock(double distance, float yawDiffToTarget,
+                                       boolean holdingSword, boolean utilityActive) {
+        if (!holdingSword) return false;
+        if (utilityActive || isUsingUtilityItem()) return false;
+        if (distance > CANCEL_MAX_DISTANCE) return false;
+        return Math.abs(yawDiffToTarget) <= CANCEL_MAX_YAW_DIFF;
     }
 
     private boolean shouldStartBlockhit(EntityPlayer target, double distance, float yawDiffToTarget,

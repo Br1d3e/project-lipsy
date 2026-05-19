@@ -13,9 +13,11 @@ import numpy as np
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AIM_DIR = os.path.join(BASE_DIR, "aim")
 STRAFE_DIR = os.path.join(BASE_DIR, "strafe")
+BLOCKHIT_DIR = os.path.join(BASE_DIR, "blockhit")
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, AIM_DIR)
 sys.path.insert(0, STRAFE_DIR)
+sys.path.insert(0, BLOCKHIT_DIR)
 
 from aim.train_aim_model import Aim1dCNN, AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
 from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
@@ -23,15 +25,21 @@ from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
 from strafe.train_strafe_model import Strafe1dCNN, StrafeStackedMLP
 from strafe.train_strafe_model import SEQ_LEN as STRAFE_SEQ_LEN
 
+from blockhit.train_blockhit_model import BlockhitStackedMLP, Blockhit1dCNN
+from blockhit.train_blockhit_model import SEQ_LEN as BLOCKHIT_SEQ_LEN
+
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-OBS_SIZE = 17
+OBS_SIZE = 28
 AIM_FEATURE_SIZE = 16
 STRAFE_FEATURE_SIZE = 16
+BLOCKHIT_FEATURE_SIZE = 14
 AIM_ACTION_SIZE = 2
 STRAFE_ACTION_SIZE = 1
-ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE
+BLOCKHIT_ACTION_SIZE = 1
+ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE + BLOCKHIT_ACTION_SIZE
 STRAFE_OUTPUT_SIZE = 3
+BLOCKHIT_OUTPUT_SIZE = 2
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
@@ -41,6 +49,8 @@ MODEL_CLASSES = {
     "Aim1dCNN": Aim1dCNN,
     "StrafeStackedMLP": StrafeStackedMLP,
     "Strafe1dCNN": Strafe1dCNN,
+    "BlockhitStackedMLP": BlockhitStackedMLP,
+    "Blockhit1dCNN": Blockhit1dCNN,
 }
 
 
@@ -80,6 +90,20 @@ def checkpoint_cnn_layout(checkpoint):
     return conv_channels, linear_channels, relu_after_final_conv
 
 
+def checkpoint_mlp_hidden_channels(checkpoint):
+    state_dict = checkpoint["model_state_dict"]
+    output_dim = int(checkpoint.get("output_dim", 2))
+    hidden_channels = []
+    for idx in range(0, 64):
+        weight = state_dict.get("layers.%d.weight" % idx)
+        if weight is None or len(weight.shape) != 2:
+            continue
+        out_features = int(weight.shape[0])
+        if out_features != output_dim:
+            hidden_channels.append(out_features)
+    return hidden_channels
+
+
 def load_model(path: str, input_dim: int, output_dim: int, default_model_class_name="Aim1dCNN",
                expected_model_class_name=None):
     main_module = sys.modules.get("__main__")
@@ -106,6 +130,8 @@ def load_model(path: str, input_dim: int, output_dim: int, default_model_class_n
             kwargs["conv_channels"] = conv_channels
             kwargs["linear_channels"] = linear_channels
             kwargs["relu_after_final_conv"] = relu_after_final_conv
+        if model_class_name == "BlockhitStackedMLP":
+            kwargs["hidden_channels"] = checkpoint_mlp_hidden_channels(loaded)
         model = model_class(**kwargs)
         model.load_state_dict(loaded["model_state_dict"])
         model.checkpoint_meta = loaded
@@ -127,6 +153,12 @@ STRAFE_MODEL_CONFIG = {
     "MODEL_PATH": os.path.join(STRAFE_DIR, "strafe_cnn_3.pth"),
     "INPUT_DIM": STRAFE_FEATURE_SIZE * STRAFE_SEQ_LEN,
     "OUTPUT_DIM": STRAFE_OUTPUT_SIZE
+}
+
+BLOCKHIT_MODEL_CONFIG = {
+    "MODEL_PATH": os.path.join(BLOCKHIT_DIR, "blockhit_stacked_mlp_9.pth"),
+    "INPUT_DIM": BLOCKHIT_FEATURE_SIZE * BLOCKHIT_SEQ_LEN,
+    "OUTPUT_DIM": BLOCKHIT_OUTPUT_SIZE
 }
 
 host = "127.0.0.1"
@@ -182,6 +214,27 @@ def get_strafe_data(data: np.ndarray):
         data[5], data[6], data[7], data[8], data[9], data[10],
         data[11], data[12], data[13], data[14], data[15],
     ], dtype="<f4")
+
+
+def get_blockhit_data(data: np.ndarray):
+    if len(data) < OBS_SIZE:
+        raise ValueError("Blockhit observation too short: expected %d, got %d" % (OBS_SIZE, len(data)))
+    # Blockhit model FEATURES:
+    # aAttack, aStrafe, targetHurtTime, myHurtTime, ticksSinceLastDamageTaken,
+    # ticksSinceLastAttack, targetDistance, targetSwingProgress, mySwingProgress,
+    # myHoldingSword, myUsingItem, crosshairOnTarget, yawDiffToTarget, pitchDiffToTarget.
+    return np.asarray([
+        data[17], data[18], data[19], data[20], data[21], data[22],
+        data[10], data[23], data[24], data[25], data[26], data[27],
+        data[14], data[15],
+    ], dtype="<f4")
+
+
+def logits_to_blockhit_action(logits, p_threshold=0.8):
+    logits = np.asarray(logits, dtype=np.float32).reshape(-1)
+    exp_logits = np.exp(logits - np.max(logits))
+    probs = exp_logits / exp_logits.sum()
+    return 1.0 if probs[1] > p_threshold else 0.0
 
 def build_action_packet(seq: int, actions: list):
     actions = np.asarray(actions, dtype="<f4").reshape(-1)
@@ -265,14 +318,26 @@ def run_server():
     strafe_model.to(device)
     strafe_model.eval()
     strafe_seq_len = infer_seq_len(strafe_model, STRAFE_FEATURE_SIZE, STRAFE_MODEL_CONFIG["INPUT_DIM"])
-    print("Loaded models: aim_seq_len=%d strafe_seq_len=%d" % (aim_seq_len, strafe_seq_len))
+
+    blockhit_model = load_model(
+        BLOCKHIT_MODEL_CONFIG["MODEL_PATH"],
+        BLOCKHIT_MODEL_CONFIG["INPUT_DIM"],
+        BLOCKHIT_MODEL_CONFIG["OUTPUT_DIM"],
+        default_model_class_name="BlockhitStackedMLP",
+        expected_model_class_name="BlockhitStackedMLP",
+    )
+    blockhit_model.to(device)
+    blockhit_model.eval()
+    blockhit_seq_len = infer_seq_len(blockhit_model, BLOCKHIT_FEATURE_SIZE, BLOCKHIT_MODEL_CONFIG["INPUT_DIM"])
+
+    print("Loaded models: aim_seq_len=%d strafe_seq_len=%d blockhit_seq_len=%d" % (aim_seq_len, strafe_seq_len, blockhit_seq_len))
 
     while True:
         conn, addr = server.accept()
         print("Client connected", addr)
         aim_history = deque(maxlen=aim_seq_len)
-
         strafe_history = deque(maxlen=strafe_seq_len)
+        blockhit_history = deque(maxlen=blockhit_seq_len)
 
         try:
             while True:
@@ -304,10 +369,20 @@ def run_server():
                 pred_cls = int(np.argmax(probs))
                 strafe_confidence = float(probs[pred_cls])
 
-                
+                # Blockhit
+                blockhit_x = get_blockhit_data(obs)
+                blockhit_history.append(blockhit_x)
+                while len(blockhit_history) < blockhit_seq_len:
+                    blockhit_history.appendleft(blockhit_x)
+
+                blockhit_tensor = torch.tensor(np.array(blockhit_history), dtype=torch.float32).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    blockhit_logits = blockhit_model(blockhit_tensor).reshape(-1).cpu().numpy()
+                    blockhit_y = logits_to_blockhit_action(blockhit_logits, p_threshold=0.8)
+
                 # Keep legacy Java action layout:
-                # [deltaYaw, deltaPitch, strafeAxis, strafeConf]
-                action_list = np.concatenate((aim_y, np.asarray([strafe_y, strafe_confidence], dtype="<f4"))).tolist()
+                # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse]
+                action_list = np.concatenate((aim_y, np.asarray([strafe_y, strafe_confidence, blockhit_y], dtype="<f4"))).tolist()
                 packet = build_action_packet(seq, action_list)
                 conn.sendall(packet)
         except (ConnectionError, ValueError) as e:

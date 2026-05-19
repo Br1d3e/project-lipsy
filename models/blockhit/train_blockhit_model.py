@@ -23,21 +23,17 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class BlockhitStackedMLP(nn.Module):
-    def __init__(self, input_dim=14 * SEQ_LEN, output_dim=2):
+    def __init__(self, input_dim=14 * SEQ_LEN, output_dim=2, hidden_channels=None):
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_dim, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, output_dim),
-            # nn.ReLU(),
-            # nn.Linear(32, output_dim),
-        )
+        hidden_channels = hidden_channels or [512, 256, 128, 64]
+        layers = []
+        in_features = input_dim
+        for out_features in hidden_channels:
+            layers.append(nn.Linear(in_features, out_features))
+            layers.append(nn.ReLU())
+            in_features = out_features
+        layers.append(nn.Linear(in_features, output_dim))
+        self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
         if x.dim() > 2:

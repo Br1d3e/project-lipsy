@@ -48,7 +48,7 @@ public class ProjectLipsy {
         utils = new utils(mc);
         pearl = new Pearl(mc);
         models = new ModelConnect(mc);
-        blockhit = new Blockhit(mc);
+        blockhit = new Blockhit(mc, Blockhit.Mode.PREDICTION);
         // Register this class to receive tick events
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
@@ -88,7 +88,7 @@ public class ProjectLipsy {
                 movement.update(target, actions);
                 aiming.update(target, actions);
                 clicking.update(target);
-                blockhit.update(target, false);
+                blockhit.update(target, false, actions);
                 break;
 
             case RETREAT:
