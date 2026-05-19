@@ -10,7 +10,7 @@ TRAIN_FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gma
 
 FRAMES_NAME = "frames.jsonl.gz"
 LABELS_NAME = "labels.json"
-ROUND_START_TRIM_TICKS = 10
+ROUND_START_TRIM_TICKS = 20
 ROUND_END_TRIM_TICKS = 20
 
 class Datasets:
@@ -61,6 +61,7 @@ class Datasets:
             if not os.path.exists(frames_path):
                 continue
             session_frames = self._read_jsonl(frames_path)
+            self._col_holding_sword(session_frames)
             labels_path = os.path.join(session_path, LABELS_NAME)
             if not os.path.exists(labels_path):
                 continue
@@ -75,6 +76,7 @@ class Datasets:
     def load_folder(self, folder):
         frames_path = os.path.join(folder, FRAMES_NAME)
         frames = self._read_jsonl(frames_path)
+        self._col_holding_sword(frames)
         labels_path = os.path.join(folder, LABELS_NAME)
         with open(labels_path, "r") as f:
             labels = json.load(f)
@@ -219,3 +221,7 @@ class Datasets:
         if not isinstance(label, dict):
             return ""
         return str(label.get("label") or label.get("suggested_label") or "").strip().lower()
+
+    def _col_holding_sword(self, frames: pd.DataFrame | None) -> pd.DataFrame:
+        if isinstance(frames, pd.DataFrame):
+            frames["myHoldingSword"] = frames["myHeldItemType"] == "item.diamondSword"
