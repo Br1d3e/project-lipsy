@@ -159,7 +159,7 @@ def evaluate_model():
     device = get_device()
     model = load_model(model_path, device)
     y_true, y_pred = collect_predictions(model, loader, device)
-    y_actions = logits_to_a_use(y_pred, p_threshold=0.8)
+    y_actions = logits_to_a_use(y_pred, p_threshold=0.5)
 
     # baseline_rule(test_dataset)
     print_switch_metrics(y_pred, test_dataset)

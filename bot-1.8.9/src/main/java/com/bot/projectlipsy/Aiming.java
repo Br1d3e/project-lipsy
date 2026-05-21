@@ -75,13 +75,13 @@ public class Aiming {
             mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, pitch, 30f));
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-            if (!lastMode.equals("w/o")) {
-                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
-                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
-                mc.thePlayer.sendChatMessage(testMsg);
-                lastMsgMs = System.currentTimeMillis();
-                lastMode = "w/o";
-            }
+//            if (!lastMode.equals("w/o")) {
+//                String testMsg = "[Project Lipsy] Aiming w/o model. yaw: " + yaw + " pitch:" + pitch +
+//                        " yawDiff: " + yawDiff + " pitchDiff: " + pitchDiff;
+//                mc.thePlayer.sendChatMessage(testMsg);
+//                lastMsgMs = System.currentTimeMillis();
+//                lastMode = "w/o";
+//            }
 
         // aim with model
         } else {
@@ -93,21 +93,21 @@ public class Aiming {
             float desiredPitch = mc.thePlayer.rotationPitch + predictedDeltaPitch;
 
 //            if (System.currentTimeMillis() - lastMsgMs >= 250) {
-            if (!lastMode.equals("/w")) {
-                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
-                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
-                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
-                mc.thePlayer.sendChatMessage(testMsg);
-                lastMsgMs = System.currentTimeMillis();
-                lastMode = "/w";
-            }
+//            if (!lastMode.equals("/w")) {
+//                String testMsg = "[Project Lipsy] Aiming w/ model. desiredYaw: " + desiredYaw + " desiredPitch: " + desiredPitch
+//                        + " currentYawDiff: " + yawDiff + " currentPitchDiff: " + pitchDiff
+//                        + " predictedDeltaYaw: " + predictedDeltaYaw + " predictedDeltaPitch: " + predictedDeltaPitch;
+//                mc.thePlayer.sendChatMessage(testMsg);
+//                lastMsgMs = System.currentTimeMillis();
+//                lastMode = "/w";
+//            }
 
             float desiredYawDiff = yaw - desiredYaw;
-            if (MathHelper.wrapAngleTo180_float(Math.abs(desiredYawDiff)) <= MODEL_EXIT_YAW) {
+            if (Math.abs(MathHelper.wrapAngleTo180_float(desiredYawDiff)) <= MODEL_EXIT_YAW) {
                 mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, desiredYaw, 50f));
                 mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, desiredPitch, 15f));
             } else {
-                mc.thePlayer.sendChatMessage("[Project Lipsy] desiredYawDiff too large: " + desiredYawDiff);
+                mc.thePlayer.sendChatMessage("[Project L1psy] rejected desiredYawDiff " + desiredYawDiff);
             }
         }
     }

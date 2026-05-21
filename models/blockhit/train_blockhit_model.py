@@ -17,7 +17,7 @@ SEQ_LEN = 15
 BATCH_SIZE = 128
 EPOCHS = 100
 LEARNING_RATE = 1e-3
-CLASS_WEIGHTS = torch.tensor([1.0, 10.0], dtype=torch.float32)    # baseline
+CLASS_WEIGHTS = torch.tensor([1.0, 8.0], dtype=torch.float32)    # baseline
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -229,13 +229,13 @@ if __name__ == "__main__":
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
     output_dim = 2
-    model_name = "stacked MLP 10"
+    model_name = "stacked MLP 9"
     architecture = f"{input_dim} -> 512 -> 256 -> 128 -> 64 -> 2"
 
     model = BlockhitStackedMLP(input_dim=input_dim, output_dim=output_dim)
     # model = Blockhit1dCNN(input_dim=feature_dim, output_dim=output_dim)
 
-    model_path = os.path.join(BASE_DIR, "blockhit_stacked_mlp_10.pth")
+    model_path = os.path.join(BASE_DIR, "blockhit_stacked_mlp_9.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

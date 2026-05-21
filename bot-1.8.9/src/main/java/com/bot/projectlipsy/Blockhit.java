@@ -99,6 +99,7 @@ public class Blockhit {
             }
 
             holdUseItem(true);
+            mc.thePlayer.sendChatMessage("[Project Lipsy] Blockhitting");
             blockTicksLeft--;
             if (blockTicksLeft <= 0) {
                 releaseBlocking();
