@@ -378,7 +378,7 @@ def run_server():
                 blockhit_tensor = torch.tensor(np.array(blockhit_history), dtype=torch.float32).unsqueeze(0).to(device)
                 with torch.no_grad():
                     blockhit_logits = blockhit_model(blockhit_tensor).reshape(-1).cpu().numpy()
-                    blockhit_y = logits_to_blockhit_action(blockhit_logits, p_threshold=0.8)
+                    blockhit_y = logits_to_blockhit_action(blockhit_logits, p_threshold=0.3)
 
                 # Keep legacy Java action layout:
                 # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse]

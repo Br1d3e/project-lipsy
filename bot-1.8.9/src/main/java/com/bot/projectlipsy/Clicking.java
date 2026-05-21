@@ -4,7 +4,9 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.util.MathHelper;
 
 import java.io.File;
 import java.io.FileReader;
@@ -18,10 +20,34 @@ public class Clicking {
     private final utils utils;
     private long lastClickTime = 0;
     private int index = 0;
+    private String activePattern = "";
 
     // Use the absolute path to the patterns directory
-    private static final File PATTERN_DIR = new File("/Users/br1d3e/Library/CloudStorage/OneDrive-Personal/Project Lipsy - Continued/forge-1.8.9-11.15.1.2318-1.8.9-mdk/src/main/java/com/bot/projectlipsy/Click Patterns");
+    private static final File PATTERN_DIR = new File("/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/bot-1.8.9/src/main/java/com/bot/projectlipsy/Click Patterns");
     private final Map<String, List<Long>> patterns;
+
+    private enum CLICK_MODE {
+        SPAM,
+        BURST,
+        COMBO
+    }
+    private CLICK_MODE clickMode = CLICK_MODE.SPAM;
+
+    private enum TICK_STATE {
+        NONE,
+        CLICKING,
+        FINISHED
+    }
+    private TICK_STATE tickState = TICK_STATE.NONE;
+
+    // click mode heuristics
+    private static final double MAX_BURST_DISTANCE = 2D;
+    private static final int MIN_COMBO = 3;
+    private static final double COMBO_TARGET_HP = 8D;
+    private static final double MIN_HP_DIFF = 4D;
+    private static final float TURN_YAW = 90F;
+
+    private String lastMode = "";
 
     public Clicking(Minecraft mc) {
         this.mc = mc;
@@ -73,26 +99,123 @@ public class Clicking {
     public void update(EntityPlayer target) {
         if (target == null) return;
 
+        utils.updateCombos(target);
         utils.switchItem("Diamond Sword");
 
-        tick("butterfly1");
+        double targetHp = target.getHealth();   // TODO: replace with target health estimator
+        double hpDiff = mc.thePlayer.getHealth() - targetHp;
+
+        double dx = mc.thePlayer.posX - target.posX;
+        double dz = mc.thePlayer.posZ - target.posZ;
+        float targetSupposedYaw = MathHelper.wrapAngleTo180_float((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90F));
+
+        boolean hasCombo = utils.getMyCombo() >= MIN_COMBO;
+        boolean availableHp = targetHp <= COMBO_TARGET_HP && hpDiff >= MIN_HP_DIFF;
+        boolean targetTurning = Math.abs(MathHelper.wrapAngleTo180_float(targetSupposedYaw - target.rotationYaw)) > TURN_YAW;
+
+        boolean lowDistance = mc.thePlayer.getDistanceToEntity(target) <= MAX_BURST_DISTANCE;
+        Entity crossHairEntity = mc.objectMouseOver == null ? null : mc.objectMouseOver.entityHit;
+        boolean crossHairOnTarget = crossHairEntity == target;
+
+        if (hasCombo || (availableHp && targetTurning)) {
+            setClickMode(CLICK_MODE.COMBO);
+            if (!lastMode.equals("combo")) {
+                mc.thePlayer.sendChatMessage("[Project L1psy] Click: combo mode");
+                lastMode = "combo";
+            }
+            comboClick(target);
+        } else if (lowDistance && crossHairOnTarget) {
+            setClickMode(CLICK_MODE.BURST);
+            if (!lastMode.equals("burst")) {
+                mc.thePlayer.sendChatMessage("[Project L1psy] Click: burst mode");
+                lastMode = "burst";
+            }
+            burstClick(target);
+        } else {
+            setClickMode(CLICK_MODE.SPAM);
+            if (!lastMode.equals("spam")) {
+                mc.thePlayer.sendChatMessage("[Project L1psy] Click: spam mode");
+                lastMode = "spam";
+            }
+            spamClick();
+        }
+    }
+
+    private void setClickMode(CLICK_MODE nextMode) {
+        if (clickMode == nextMode) {
+            return;
+        }
+        clickMode = nextMode;
+        index = 0;
+        tickState = TICK_STATE.NONE;
+        activePattern = "";
+        lastClickTime = System.currentTimeMillis();
+    }
+
+    public void burstClick(EntityPlayer target) {
+        if (target == null || clickMode != CLICK_MODE.BURST) return;
+
+        if (tickState == TICK_STATE.FINISHED) {
+            if (target.hurtTime <= 1 && mc.thePlayer.hurtTime > 0) {
+                resetPattern("burst_click");
+            } else {
+                return;
+            }
+        }
+        tick("burst_click", false);
+    }
+
+    public void spamClick() {
+        if (clickMode != CLICK_MODE.SPAM) return;
+        tick("butterfly_3");
+    }
+
+    public void comboClick(EntityPlayer target) {
+        if (target == null || clickMode != CLICK_MODE.COMBO) return;
+
+        if (tickState == TICK_STATE.FINISHED) {
+            if (target.hurtTime <= 1) {
+                resetPattern("triple_click");
+            } else {
+                return;
+            }
+        }
+        tick("triple_click", false);
     }
 
     public void tick(String patternName) {
+        tick(patternName, true);
+    }
+    public void tick(String patternName, boolean loop) {
         List<Long> pattern = patterns.get(patternName);
         if (pattern == null || pattern.isEmpty()) {
+            return;
+        }
+        if (!patternName.equals(activePattern)) {
+            resetPattern(patternName);
+        }
+        if (!loop && tickState == TICK_STATE.FINISHED) {
             return;
         }
 
         long now = System.currentTimeMillis();
         if (now - lastClickTime >= pattern.get(index)) {
-            KeyBinding.onTick(Minecraft.getMinecraft().gameSettings.keyBindAttack.getKeyCode()); // Correct way to simulate a click
+            tickState = TICK_STATE.CLICKING;
+            KeyBinding.onTick(Minecraft.getMinecraft().gameSettings.keyBindAttack.getKeyCode());
             lastClickTime = now;
             index++;
             if (index >= pattern.size()) {
-                index = 0; // Loop pattern
+                index = 0;
+                tickState = TICK_STATE.FINISHED;
             }
         }
+    }
+
+    private void resetPattern(String patternName) {
+        activePattern = patternName;
+        index = 0;
+        tickState = TICK_STATE.NONE;
+        lastClickTime = System.currentTimeMillis();
     }
 
 }

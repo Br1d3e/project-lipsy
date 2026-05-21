@@ -107,7 +107,7 @@ public class Aiming {
                 mc.thePlayer.rotationYaw = MathHelper.wrapAngleTo180_float(updateRotation(mc.thePlayer.rotationYaw, desiredYaw, 50f));
                 mc.thePlayer.rotationPitch = clampPitch(updateRotation(mc.thePlayer.rotationPitch, desiredPitch, 15f));
             } else {
-                mc.thePlayer.sendChatMessage("[Project L1psy] rejected desiredYawDiff " + desiredYawDiff);
+//                mc.thePlayer.sendChatMessage("[Project L1psy] rejected desiredYawDiff " + desiredYawDiff);
             }
         }
     }
