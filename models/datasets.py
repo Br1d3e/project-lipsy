@@ -62,6 +62,7 @@ class Datasets:
                 continue
             session_frames = self._read_jsonl(frames_path)
             self._col_holding_sword(session_frames)
+            self._derived_features(session_frames)
             labels_path = os.path.join(session_path, LABELS_NAME)
             if not os.path.exists(labels_path):
                 continue
@@ -77,6 +78,7 @@ class Datasets:
         frames_path = os.path.join(folder, FRAMES_NAME)
         frames = self._read_jsonl(frames_path)
         self._col_holding_sword(frames)
+        self._derived_features(frames)
         labels_path = os.path.join(folder, LABELS_NAME)
         with open(labels_path, "r") as f:
             labels = json.load(f)
@@ -138,9 +140,18 @@ class Datasets:
 
     def split_train_val_test(self, rounds):
         round_len = len(rounds)
+        if round_len == 0:
+            return [], [], []
+        if round_len == 1:
+            return rounds, [], []
+        if round_len == 2:
+            return rounds[:1], [], rounds[1:]
 
         train_len = int(round_len * 0.80)
-        val_len = int(round_len * 0.10)
+        val_len = max(1, int(round_len * 0.10))
+        if train_len + val_len >= round_len:
+            train_len = round_len - 2
+            val_len = 1
         test_len = round_len - train_len - val_len
         train_rounds = rounds[:train_len]
         val_rounds = rounds[train_len:train_len + val_len]
@@ -161,7 +172,7 @@ class Datasets:
     def get_labels(self):
         return self.labels
 
-    def make_windows(self, rounds, features, targets, seq_len=1, stride=1, label_filter="attack"):
+    def make_windows(self, rounds, features, targets, seq_len=1, stride=1, label_filter: str=None):
         data_windows = []
         columns = features + targets
         feature_count = len(features)
@@ -172,7 +183,7 @@ class Datasets:
             round_end = round_df["recordingTickIndex"].max()
 
             for label in self.labels_for_round(round_df):
-                if self.label_name(label) != label_filter:
+                if label_filter is not None and self.label_name(label) != label_filter:
                     continue
 
                 label_start = label["start_tick"]
@@ -222,6 +233,19 @@ class Datasets:
             return ""
         return str(label.get("label") or label.get("suggested_label") or "").strip().lower()
 
-    def _col_holding_sword(self, frames: pd.DataFrame | None) -> pd.DataFrame:
+    def _col_holding_sword(self, frames: pd.DataFrame | None):
         if isinstance(frames, pd.DataFrame):
-            frames["myHoldingSword"] = frames["myHeldItemType"] == "item.diamondSword"
+            frames["myHoldingSword"] = frames["myHeldItemType"] == "item.swordDiamond"
+
+    def _derived_features(self, frames: pd.DataFrame | None):
+        if isinstance(frames, pd.DataFrame):
+            if "hotbarHealthPotions" not in frames.columns:
+                frames["hotbarHealthPotions"] = frames.get("inventoryHealthPotions", 0)
+            if "ticksSinceLastBlock" not in frames.columns:
+                frames["ticksSinceLastBlock"] = 100000
+            if "targetEstimatedPotions" not in frames.columns:
+                frames["targetEstimatedPotions"] = 29
+            frames["canHeal"] = (frames["inventoryHealthPotions"] > 0) & (frames["myHp"] < 15)    # loose hp boundary
+            frames["canSpeed"] = frames["inventorySpeedPotions"] > 0
+            frames["canEat"] = (frames["inventoryFood"] > 0) & (frames["myFoodLevel"] < 20)
+            frames["canPearl"] = (frames["inventoryPearls"] > 0) & (frames["pearlCooldownTicksRemaining"] <= 0)

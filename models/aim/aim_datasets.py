@@ -26,7 +26,7 @@ class AimDataset:
             self.feature_list = FEATURES_HISTORY
 
     def make_windows(self, rounds, seq_len = 1, stride = 1):
-        return self.datasets.make_windows(rounds, self.feature_list, TARGETS, seq_len, stride)
+        return self.datasets.make_windows(rounds, self.feature_list, TARGETS, seq_len, stride, label_filter="attack")
 
     def get_features_targets(self, rounds, seq_len = 1, stride = 1):
         return self.make_windows(rounds, seq_len, stride)
