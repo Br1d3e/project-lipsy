@@ -76,8 +76,8 @@ FEATURES = [
     "s_retreat"
 ]
 
-states = ["s_attack", "s_heal", "s_pearl", "s_speed", "s_eat", "s_refill", "s_retreat"]
-TARGETS = {"attack": 0, "retreat": 1, "heal": 2, "pearl": 3, "eat": 4, "speed": 5, "refill": 6}
+STATES = ["s_attack", "s_heal", "s_pearl", "s_speed", "s_eat", "s_refill", "s_retreat"]
+TARGETS = {"attack": 0, "heal": 1, "pearl": 2, "speed": 3, "eat": 4, "refill": 5, "retreat": 6}
 FEATURE_DEFAULTS = {
     "ticksSinceLastAttack": 100000,
     "ticksSinceLastBlock": 100000,
@@ -103,17 +103,36 @@ FEATURE_DEFAULTS = {
 }
 
 class HLDecisionDataset:
-    def __init__(self):
+    def __init__(self, features: list[str] = None):
         self.datasets = Datasets(TRAIN_FOLDER, keep_frames=False)
         self.train_data = self.datasets.get_train_data()
         self.val_data = self.datasets.get_val_data()
         self.test_data = self.datasets.get_test_data()
         self.labels = self.datasets.get_labels()
         self.feature_list = FEATURES
+        if isinstance(features, list):
+            self.feature_list = features
 
-    def make_windows(self, rounds: list[pd.DataFrame], features, transition_context=0, seq_len=1):
+    def make_windows(
+            self,
+            rounds: list[pd.DataFrame],
+            features=None,
+            label_name=None,
+            mode=None,
+            transition_context=0,
+            seq_len=1,
+            candidate_mask_fn=None,
+            mask_window="last",
+    ):
+        if mode not in (None, "positive", "negative"):
+            raise ValueError(f"mode must be None, 'positive', or 'negative', got {mode!r}")
+        if mode in ("positive", "negative") and not label_name:
+            raise ValueError("label_name is required for positive/negative trigger modes")
+        if mask_window not in ("last", "all"):
+            raise ValueError(f"mask_window must be 'last' or 'all', got {mask_window!r}")
+
         data_windows = []
-        columns = features
+        columns = list(features if features is not None else self.feature_list)
 
         for round_df in rounds:
             round_df = round_df.set_index("recordingTickIndex", drop=False)
@@ -126,8 +145,23 @@ class HLDecisionDataset:
                 prev_label = labels[i - 1]
                 curr_label = labels[i]
                 curr_name = self.datasets.label_name(curr_label)
-                if curr_name not in TARGETS:
-                    continue
+                target_value = None
+                if mode == "positive":
+                    if curr_name != label_name:
+                        continue
+                    target_value = np.asarray([1], dtype=np.float32)
+                elif mode == "negative":
+                    if curr_name == label_name:
+                        continue
+                    target_value = np.asarray([0], dtype=np.float32)
+                else:
+                    if curr_name not in TARGETS.keys():
+                        continue
+                    if label_name:
+                        target_value = np.asarray([1 if curr_name == label_name else 0], dtype=np.float32)
+                    else:
+                        target_value = np.asarray([TARGETS[curr_name]], dtype=np.float32)
+
                 curr_start = curr_label["start_tick"]
                 prev_end = prev_label["end_tick"]
                 overlap_start = max(round_start, prev_end - transition_context)
@@ -144,26 +178,41 @@ class HLDecisionDataset:
                 ].sort_index()
                 available = available.fillna(FEATURE_DEFAULTS)
 
-                if len(available) <= seq_len:
+                if len(available) < seq_len:
                     continue
 
                 values = available.to_numpy(dtype=np.float32, copy=True)
-                values = values[np.isfinite(values).all(axis=1)]
-                if len(values) <= seq_len:
+                valid_rows = np.isfinite(values).all(axis=1)
+                candidate_mask = np.ones(len(available), dtype=bool)
+                if candidate_mask_fn is not None:
+                    candidate_mask = np.asarray(candidate_mask_fn(available), dtype=bool)
+                    if len(candidate_mask) != len(available):
+                        raise ValueError(
+                            f"candidate_mask_fn returned {len(candidate_mask)} rows for {len(available)} available rows"
+                        )
+
+                if len(values) < seq_len:
                     continue
 
-                target_value = np.asarray([TARGETS[curr_name]], dtype=np.float32)
-                for i in range(0, len(values) - seq_len):
+                for i in range(0, len(values) - seq_len + 1):
+                    if not valid_rows[i:i + seq_len].all():
+                        continue
+                    if mask_window == "all":
+                        if not candidate_mask[i:i + seq_len].all():
+                            continue
+                    elif not candidate_mask[i + seq_len - 1]:
+                        continue
+
                     data_windows.append((
                         values[i:i + seq_len],
-                        target_value,
+                        target_value
                     ))
 
         return data_windows
 
     def _col_states(self, frames: pd.DataFrame, labels) -> pd.DataFrame:
         frames = frames.iloc[np.argsort(frames["recordingTickIndex"].to_numpy())].copy()
-        frames[states] = 0
+        frames[STATES] = 0
 
         frames_ticks = frames["recordingTickIndex"].to_numpy()
         frames_start = frames_ticks.min()
@@ -179,19 +228,19 @@ class HLDecisionDataset:
             if overlap_start >= overlap_end:
                 continue
 
-            if label_name in TARGETS.keys():
+            if label_name in ["attack", "heal", "pearl", "speed", "eat", "refill", "retreat"]:
                 row_idx = ((overlap_start <= frames["recordingTickIndex"]) &
                            (frames["recordingTickIndex"] <= overlap_end))
-                unassigned_idx = row_idx & (frames[states].sum(axis=1) == 0)
+                unassigned_idx = row_idx & (frames[STATES].sum(axis=1) == 0)
                 frames.loc[unassigned_idx, f"s_{label_name}"] = 1
 
-        active_rows = frames[states].sum(axis=1) > 0
+        active_rows = frames[STATES].sum(axis=1) > 0
         active_state = pd.Series(np.nan, index=frames.index, dtype=object)
-        active_state.loc[active_rows] = frames.loc[active_rows, states].idxmax(axis=1)
+        active_state.loc[active_rows] = frames.loc[active_rows, STATES].idxmax(axis=1)
         previous_state = active_state.ffill().shift(1)
 
-        frames[states] = 0.0
-        for state in states:
+        frames[STATES] = 0.0
+        for state in STATES:
             frames[state] = (previous_state == state).astype(np.float32)
 
         return frames
@@ -200,19 +249,23 @@ class HLDecisionDataset:
         # x_windows = [[frames_0, frames_1, frames_2...], [frames_1, frames_2, frames_3...]]
         if not windows:
             print("No windows")
-            return np.zeros(len(states), dtype=np.float32)
+            return np.zeros(len(STATES), dtype=np.float32)
         x_windows = [window[0] for window in windows]
         x_windows = np.array(x_windows)
         states_arr = x_windows[:, -1, -7:]
         states_count = np.sum(states_arr, axis=0)
         for i in range(7):
-            print(f"{states[i]}: {states_count[i]}")
+            print(f"{STATES[i]}: {states_count[i]}")
         return states_count
 
     def rounds_state_distribution(self, rounds: pd.DataFrame):
-        states_arr = rounds[states].to_numpy()
+        states_arr = rounds[STATES].to_numpy()
         states_count = np.sum(states_arr, axis=0)
         print(states_count)
+
+    def index_of_features(self, feature_name: str):
+        if feature_name in self.feature_list:
+            return self.feature_list.index(feature_name)
 
     def get_features_targets(self, rounds, seq_len=1, transition_context=0):
         return self.make_windows(
