@@ -19,8 +19,15 @@ public class Clicking {
     private final Minecraft mc;
     private final utils utils;
     private long lastClickTime = 0;
+    private int clickTicksRemaining = 0;
     private int index = 0;
     private String activePattern = "";
+    private double comboScore = 0D;
+    private double burstScore = 0D;
+    private double spamScore = 0D;
+    private double comboProb = 0D;
+    private double burstProb = 0D;
+    private double spamProb = 0D;
 
     // Use the absolute path to the patterns directory
     private static final File PATTERN_DIR = new File("/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/bot-1.8.9/src/main/java/com/bot/projectlipsy/Click Patterns");
@@ -41,7 +48,9 @@ public class Clicking {
     private TICK_STATE tickState = TICK_STATE.NONE;
 
     // click mode heuristics
-    private static final double MAX_BURST_DISTANCE = 2D;
+    private static final int MIN_DURATION = 10;
+    private static final double MAX_BURST_DISTANCE = 1.8D;
+    private static final double MIN_COMBO_DISTANCE = 2.1D;
     private static final int MIN_COMBO = 3;
     private static final double COMBO_TARGET_HP = 8D;
     private static final double MIN_HP_DIFF = 4D;
@@ -117,29 +126,112 @@ public class Clicking {
         Entity crossHairEntity = mc.objectMouseOver == null ? null : mc.objectMouseOver.entityHit;
         boolean crossHairOnTarget = crossHairEntity == target;
 
-        if (hasCombo || (availableHp && targetTurning)) {
-            setClickMode(CLICK_MODE.COMBO);
-            if (!lastMode.equals("combo")) {
-                mc.thePlayer.sendChatMessage("[Project L1psy] Click: combo mode");
-                lastMode = "combo";
-            }
-            comboClick(target);
-        } else if (lowDistance && crossHairOnTarget) {
-            setClickMode(CLICK_MODE.BURST);
-            if (!lastMode.equals("burst")) {
-                mc.thePlayer.sendChatMessage("[Project L1psy] Click: burst mode");
-                lastMode = "burst";
-            }
-            burstClick(target);
+        updateClickScores(target);
+        computeProbabilities();
+
+        if (clickTicksRemaining > 0)  {
+            clickTicksRemaining--;
         } else {
-            setClickMode(CLICK_MODE.SPAM);
-            if (!lastMode.equals("spam")) {
-                mc.thePlayer.sendChatMessage("[Project L1psy] Click: spam mode");
-                lastMode = "spam";
+            clickTicksRemaining = MIN_DURATION;
+            if (comboProb >= 0.6) {
+                setClickMode(CLICK_MODE.COMBO);
+                if (!lastMode.equals("combo")) {
+                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: combo mode");
+                    lastMode = "combo";
+                }
+                resetScores();
+            } else if (burstProb >= 0.5) {
+                setClickMode(CLICK_MODE.BURST);
+                if (!lastMode.equals("burst")) {
+                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: burst mode");
+                    lastMode = "burst";
+                }
+                resetScores();
+            } else {
+                setClickMode(CLICK_MODE.SPAM);
+                if (!lastMode.equals("spam")) {
+                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: spam mode");
+                    lastMode = "spam";
+                }
+                resetScores();
             }
-            spamClick();
+        }
+
+        switch (clickMode) {
+            case COMBO:
+                comboClick(target);
+                break;
+            case BURST:
+                burstClick(target);
+                break;
+            case SPAM:
+                spamClick();
+                break;
+        }
+
+    }
+
+    private void updateClickScores(EntityPlayer target) {
+        if (target == null) return;
+
+        double targetHp = target.getHealth();   // TODO: replace with target health estimator
+        double hpDiff = mc.thePlayer.getHealth() - targetHp;
+
+        double dx = mc.thePlayer.posX - target.posX;
+        double dz = mc.thePlayer.posZ - target.posZ;
+        float targetSupposedYaw = MathHelper.wrapAngleTo180_float((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90F));
+
+        boolean hasCombo = utils.getMyCombo() >= MIN_COMBO;
+        boolean availableHp = targetHp <= COMBO_TARGET_HP && hpDiff >= MIN_HP_DIFF;
+        boolean targetTurning = Math.abs(MathHelper.wrapAngleTo180_float(
+                targetSupposedYaw - target.rotationYaw)) > TURN_YAW;
+        boolean midDistance = mc.thePlayer.getDistanceToEntity(target) >= MIN_COMBO_DISTANCE;
+
+        boolean lowDistance = mc.thePlayer.getDistanceToEntity(target) <= MAX_BURST_DISTANCE;
+        Entity crossHairEntity = mc.objectMouseOver == null ? null : mc.objectMouseOver.entityHit;
+        boolean crossHairOnTarget = crossHairEntity == target;
+
+        if (hasCombo) {
+            comboScore += 0.25D;
+        } else {
+            burstScore += 0.15D;
+            spamScore += 0.2D;
+        }
+        if (availableHp) {
+            comboScore += 0.15D;
+        }
+        if (targetTurning) {
+            comboScore += 0.12D;
+        }
+        if (midDistance) {
+            comboScore += 0.2D;
+            spamScore += 0.1D;
+        } else if (lowDistance) {
+            comboScore -= 0.18D;
+            burstScore += 0.3D;
+            spamScore += 0.1D;
+        }
+        if (crossHairOnTarget) {
+            comboScore += 0.05D;
+            burstScore += 0.2D;
+        } else {
+            spamScore += 0.2D;
         }
     }
+
+    private void resetScores() {
+        comboScore = 0;
+        burstScore = 0;
+        spamScore = 0;
+    }
+
+    private void computeProbabilities() {
+        double expSum = Math.exp(comboScore) + Math.exp(burstScore) + Math.exp(spamScore);
+        comboProb = Math.exp(comboScore) / expSum;
+        burstProb = Math.exp(burstScore) / expSum;
+        spamProb = Math.exp(spamScore) / expSum;
+    }
+
 
     private void setClickMode(CLICK_MODE nextMode) {
         if (clickMode == nextMode) {
