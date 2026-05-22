@@ -100,7 +100,7 @@ public class Healing {
 //            potMode = targetDistance < 6D ? HealingMode.TURN : HealingMode.FRONT;
             if (targetDistance <= 3D) {
                 potMode = mc.thePlayer.onGround ? HealingMode.TURN : HealingMode.FAST;
-            } else if (targetDistance < 5D) {
+            } else if (targetDistance < 7D) {
                 potMode = HealingMode.TURN;
             } else {
                 potMode = HealingMode.FRONT;
@@ -175,7 +175,7 @@ public class Healing {
             mc.thePlayer.rotationPitch = 20F;
         } else if (potTicks == 4) {
             mc.thePlayer.rotationYaw = retreatYaw;
-            mc.thePlayer.rotationPitch = mc.thePlayer.onGround ? 30F : 40F;
+            mc.thePlayer.rotationPitch = mc.thePlayer.onGround ? 25F : 30F;
         } else if (potTicks == 6) {
             utils.switchItem("Splash Potion of Healing");
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);

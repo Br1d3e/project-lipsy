@@ -46,13 +46,15 @@ public class Retreat {
         if (backTicks > backMaxTicks) {
            backTicks = 0;
            backMaxTicks = (int) Math.floor(Math.random() * 8) + 2;
-//           return;
-
            KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
-           turn(target);    // switch to turn if backTicks reaches limit
+           if (!isJump) {
+               movement.stopJump();
+           }
+           return;
         }
 
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), true);
+//        KeyBinding.onTick(mc.gameSettings.keyBindBack.getKeyCode());
         if (isJump) {
             movement.jump();
         }

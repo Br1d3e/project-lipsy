@@ -6,31 +6,38 @@ import net.minecraft.entity.player.EntityPlayer;
 
 public class Movement {
     private final Minecraft mc;
+    private final utils utils;
     String lastMsg = "";
     private final float CONF_THRESHOLD = 0.6F;
     private int currentStrafe = 0;
     private int strafeHoldTicks = 0;
     private int MIN_HOLD_TICKS = 3;
+    private int ticksLastJump = 0;
+    private int jumpTicksLeft = 0;
 
     public Movement(Minecraft mc) {
         this.mc = mc;
+        this.utils = new utils(mc);
     }
 
     public void update(EntityPlayer target, float[] actions) {
+        tickJump();
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindSprint.getKeyCode(), true);
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), true);
 
+        utils.updateCombos(target);
         wtap(target);
         predictStrafe(actions);
+        offCombo(target);
     }
 
     private void wtap(EntityPlayer target) {
         double dist = mc.thePlayer.getDistanceToEntity(target);
         if (target.hurtTime > 0){
-            if (dist > 2.4F && dist <= 3.0F) {
+            if (dist > 2.5F && dist <= 3.0F) {
                 KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), true);
                 KeyBinding.setKeyBindState(mc.gameSettings.keyBindSprint.getKeyCode(), true);
-            } else if (dist <= 2.4F) {
+            } else if (dist <= 2.5F) {
                 KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
             }
         }
@@ -71,20 +78,41 @@ public class Movement {
         }
     }
 
+    private void offCombo(EntityPlayer target) {
+        int targetCombo = utils.getTargetCombo();
+        ticksLastJump++;
+        double probOffCombo = 1 - Math.exp(-0.13 * targetCombo);
+        if (ticksLastJump > 10 && mc.thePlayer.getDistanceToEntity(target) < 3 && Math.random() < probOffCombo) {
+            jump();
+            ticksLastJump = 0;
+            mc.thePlayer.sendChatMessage("[Project L1psy] attempted to jump");
+        }
+    }
+
     public void sprint() {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), true);
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindSprint.getKeyCode(), true);
     }
 
     public void jump(){
-        jump(2);
+        jump(10);
     }
 
     public void jump(int durationTicks) {
-        long startTime = System.currentTimeMillis();
-        int durationTime = durationTicks * 20;
-        KeyBinding.onTick(mc.gameSettings.keyBindJump.getKeyCode());
-        if (System.currentTimeMillis() - startTime > durationTime) {
+        jumpTicksLeft = Math.max(jumpTicksLeft, durationTicks);
+        tickJump();
+    }
+
+    public void stopJump() {
+        jumpTicksLeft = 0;
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), false);
+    }
+
+    private void tickJump() {
+        if (jumpTicksLeft > 0) {
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), true);
+            jumpTicksLeft--;
+        } else {
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), false);
         }
     }
