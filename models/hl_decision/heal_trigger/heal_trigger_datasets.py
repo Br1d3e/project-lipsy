@@ -2,55 +2,55 @@ import numpy as np
 
 from models.hl_decision.hl_decision_datasets import HLDecisionDataset
 
-FEATURES = [
-    # self
-    "myHp",
-    "myCombo",
-    "targetCombo",
-
-    # resources
-    "enemyPearlAvailable",
-    "hotbarHealthPotions",
-    "inventoryHealthPotions",
-
-    # timers
-    "ticksSinceLastAttack",
-    "ticksSinceLastPot",
-    "ticksSinceLastDamageTaken",
-
-    # space
-    "blockDistanceFront",
-    "blockDistanceBack",
-    "blockDistanceLeft",
-    "blockDistanceRight",
-
-    # target
-    "targetExists",
-    "targetDistance",
-    "targetMotionX",
-    "targetMotionZ",
-    "targetEstimatedHp",
-    "targetFood",
-    "targetEating",
-    "targetSpeeding",
-    "targetPearling",
-    "targetPotting",
-
-    # relation
-    "hpDiff",
-
-    # derived
-    "canHeal",
-
-    # previous state
-    "s_attack",
-    "s_heal",
-    "s_pearl",
-    "s_speed",
-    "s_eat",
-    "s_refill",
-    "s_retreat",
-]
+# use global features
+# FEATURES = [
+#     # self
+#     "myHp",
+#     "myCombo",
+#     "targetCombo",
+#
+#     # resources
+#     "enemyPearlAvailable",
+#     "hotbarHealthPotions",
+#     "inventoryHealthPotions",
+#
+#     # timers
+#     "ticksSinceLastAttack",
+#     "ticksSinceLastPot",
+#     "ticksSinceLastDamageTaken",
+#
+#     # space
+#     "blockDistanceFront",
+#     "blockDistanceBack",
+#     "blockDistanceLeft",
+#     "blockDistanceRight",
+#
+#     # target
+#     "targetExists",
+#     "targetDistance",
+#     "targetMotionX",
+#     "targetMotionZ",
+#     "targetEstimatedHp",
+#     "targetEating",
+#     "targetSpeeding",
+#     "targetPearling",
+#     "targetPotting",
+#
+#     # relation
+#     "hpDiff",
+#
+#     # derived
+#     "canHeal",
+#
+#     # previous state
+#     "s_attack",
+#     "s_heal",
+#     "s_pearl",
+#     "s_speed",
+#     "s_eat",
+#     "s_refill",
+#     "s_retreat",
+# ]
 
 HIGH_HP_THRESHOLD = 12
 LOW_HP_THRESHOLD = 10
@@ -58,7 +58,7 @@ LOW_HP_THRESHOLD = 10
 
 class HealTriggerDataset(HLDecisionDataset):
     def __init__(self):
-        super().__init__(features=FEATURES)
+        super().__init__()
 
     @staticmethod
     def hard_negative_mask(frames):
@@ -114,7 +114,8 @@ class HealTriggerDataset(HLDecisionDataset):
         print(f"easy_negative_windows: {len(windows)}")
         return windows
 
-    def split_train_val_windows(self, rounds, transition_context=0, seq_len=1, positive_to_negative=0.5, prefer_hard_negative=False):
+    def split_train_val_windows(self, rounds, transition_context=0, seq_len=1, positive_to_negative=0.5,
+                                prefer_hard_negative=False, sample_mode="even"):
         windows = []
         positive = self.positive_windows(rounds, transition_context, seq_len)
         easy_negative = self.easy_negative_windows(rounds, transition_context, seq_len)
@@ -127,10 +128,14 @@ class HealTriggerDataset(HLDecisionDataset):
         positive_len = min(round(windows_len * positive_ratio), len(positive))
         negative_len = min(round(positive_len / positive_to_negative), len(negative))
 
-        positive = self._sample_windows(positive, positive_len)
+        positive = self._sample_windows(positive, positive_len, sample_mode)
         if prefer_hard_negative:
-            negative = hard_negative + self._sample_windows(negative, negative_len - len(hard_negative))
-        negative = self._sample_windows(negative, negative_len)
+            if len(hard_negative) >= negative_len:
+                negative = self._sample_windows(hard_negative, negative_len, sample_mode)
+            else:
+                negative = hard_negative + self._sample_windows(negative, negative_len - len(hard_negative), sample_mode)
+        else:
+            negative = self._sample_windows(negative, negative_len, sample_mode)
 
         windows.extend(positive)
         windows.extend(negative)
@@ -147,7 +152,7 @@ class HealTriggerDataset(HLDecisionDataset):
             rng = np.random.default_rng(seed=42)
             sample_idx = rng.choice(len(windows), size=required, replace=False)
         else:
-            raise ValueError("Invalid mode.")
+            raise ValueError(f"Invalid sample mode. Expected 'even' or 'random', got {mode!r}")
 
         return [windows[i] for i in sample_idx]
 
@@ -198,11 +203,15 @@ class HealTriggerDataset(HLDecisionDataset):
         print(f"target_distribution: {counts}")
         return counts
 
-    def get_train_windows(self, seq_len=1, stride=1, transition_context=0, positive_to_negative=0.5, prefer_hard_negative=False):
-        return self.split_train_val_windows(self.train_data, transition_context, seq_len, positive_to_negative, prefer_hard_negative)
+    def get_train_windows(self, seq_len=1, stride=1, transition_context=0, positive_to_negative=0.5,
+                          prefer_hard_negative=False, sample_mode="even"):
+        return self.split_train_val_windows(self.train_data, transition_context, seq_len, positive_to_negative,
+                                            prefer_hard_negative, sample_mode)
 
-    def get_val_windows(self, seq_len=1, stride=1, transition_context=0, positive_to_negative=0.5, prefer_hard_negative=False):
-        return self.split_train_val_windows(self.val_data, transition_context, seq_len, positive_to_negative, prefer_hard_negative)
+    def get_val_windows(self, seq_len=1, stride=1, transition_context=0, positive_to_negative=0.5,
+                        prefer_hard_negative=False, sample_mode="even"):
+        return self.split_train_val_windows(self.val_data, transition_context, seq_len, positive_to_negative,
+                                            prefer_hard_negative, sample_mode)
 
     def get_test_windows(self, seq_len=1, stride=1, transition_context=0):
         return self.realistic_windows(self.test_data, transition_context, seq_len)

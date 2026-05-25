@@ -65,7 +65,7 @@ FEATURES = [
     "canPearl",
     "canSpeed",
     "canEat",
-    
+
     # current state
     "s_attack",
     "s_heal",
@@ -118,6 +118,7 @@ class HLDecisionDataset:
             rounds: list[pd.DataFrame],
             features=None,
             label_name=None,
+            label_type: list | tuple | str | None=None,
             mode=None,
             transition_context=0,
             seq_len=1,
@@ -145,6 +146,7 @@ class HLDecisionDataset:
                 prev_label = labels[i - 1]
                 curr_label = labels[i]
                 curr_name = self.datasets.label_name(curr_label)
+                curr_type = curr_label["type"]
                 target_value = None
                 if mode == "positive":
                     if curr_name != label_name:
@@ -161,6 +163,11 @@ class HLDecisionDataset:
                         target_value = np.asarray([1 if curr_name == label_name else 0], dtype=np.float32)
                     else:
                         target_value = np.asarray([TARGETS[curr_name]], dtype=np.float32)
+
+                if isinstance(label_type, str) and curr_type != label_type:
+                    continue
+                if (isinstance(label_type, list) or isinstance(label_type, tuple)) and curr_type not in label_type:
+                    continue
 
                 curr_start = curr_label["start_tick"]
                 prev_end = prev_label["end_tick"]
