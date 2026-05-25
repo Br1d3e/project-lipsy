@@ -143,6 +143,10 @@ class SpeedTriggerDataset(HLDecisionDataset):
         else:
             negative = self._sample_windows(negative, negative_len, sample_mode)
 
+        print(f"Sampled:")
+        print(f"positive: {len(positive)}")
+        print(f"negative: {len(negative)}")
+
         windows.extend(positive)
         windows.extend(negative)
 

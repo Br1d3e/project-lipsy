@@ -120,6 +120,7 @@ class HealTriggerDataset(HLDecisionDataset):
         positive = self.positive_windows(rounds, transition_context, seq_len)
         easy_negative = self.easy_negative_windows(rounds, transition_context, seq_len)
         hard_negative = self.hard_negative_windows(rounds, transition_context, seq_len)
+
         negative = easy_negative + hard_negative
 
         windows_len = len(positive) + len(negative)
@@ -136,6 +137,10 @@ class HealTriggerDataset(HLDecisionDataset):
                 negative = hard_negative + self._sample_windows(negative, negative_len - len(hard_negative), sample_mode)
         else:
             negative = self._sample_windows(negative, negative_len, sample_mode)
+
+        print(f"Sampled:")
+        print(f"positive: {len(positive)}")
+        print(f"negative: {len(negative)}")
 
         windows.extend(positive)
         windows.extend(negative)

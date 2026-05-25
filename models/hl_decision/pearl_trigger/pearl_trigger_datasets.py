@@ -79,9 +79,15 @@ class PearlTriggerDataset(HLDecisionDataset):
             (frames["canPearl"] == False)
         )
 
-    def positive_windows(self, rounds, transition_context=0, seq_len=1, label_type=None):
-        if label_type is None:
-            label_type = ["tryhard", "side", "agro", "retreat"]
+    def positive_windows(self, rounds, transition_context=0, seq_len=1, pearl_type="all"):
+        if pearl_type not in ["all", "offensive", "defensive"]:
+            raise ValueError(f"Invalid pearl type. Expected 'all', 'offensive', or 'defensive', got {pearl_type!r}")
+        label_type = ["tryhard", "side", "agro", "retreat"]
+        if pearl_type == "offensive":
+            label_type = label_type[:3]
+        elif pearl_type == "defensive":
+            label_type = label_type[-1]
+
         windows = self.make_windows(
             rounds,
             self.feature_list,
@@ -145,6 +151,10 @@ class PearlTriggerDataset(HLDecisionDataset):
         else:
             negative = self._sample_windows(negative, negative_len, sample_mode)
 
+        print(f"Sampled:")
+        print(f"positive: {len(positive)}")
+        print(f"negative: {len(negative)}")
+
         windows.extend(positive)
         windows.extend(negative)
 
@@ -192,11 +202,19 @@ class PearlTriggerDataset(HLDecisionDataset):
         for item in nested:
             yield item
 
-    def realistic_windows(self, rounds, transition_context=0, seq_len=1):
+    def realistic_windows(self, rounds, transition_context=0, seq_len=1, pearl_type=None):
+        if pearl_type not in ["all", "offensive", "defensive"]:
+            raise ValueError(f"Invalid pearl type. Expected 'all', 'offensive', or 'defensive', got {pearl_type!r}")
+        label_type = ["tryhard", "side", "agro", "retreat"]
+        if pearl_type == "offensive":
+            label_type = label_type[:3]
+        elif pearl_type == "defensive":
+            label_type = label_type[-1]
         windows = self.make_windows(
             rounds,
             self.feature_list,
             label_name="pearl",
+            label_type=label_type,
             mode=None,
             transition_context=transition_context,
             seq_len=seq_len,
@@ -221,20 +239,35 @@ class PearlTriggerDataset(HLDecisionDataset):
         return self.split_train_val_windows(self.val_data, transition_context, seq_len, positive_to_negative,
                                             prefer_hard_negative, sample_mode, pearl_type)
 
-    def get_test_windows(self, seq_len=1, stride=1, transition_context=0):
-        return self.realistic_windows(self.test_data, transition_context, seq_len)
+    def get_test_windows(self, seq_len=1, stride=1, transition_context=0, pearl_type=None):
+        return self.realistic_windows(self.test_data, transition_context, seq_len, pearl_type)
 
 
 if __name__ == "__main__":
-    pearl_trigger_dataset = PearlTriggerDataset()
-    print("Train:")
-    train_windows = pearl_trigger_dataset.get_train_windows(seq_len=1, transition_context=1, positive_to_negative=0.333,
-                                                            prefer_hard_negative=True)
-    pearl_trigger_dataset.target_distribution(train_windows)
-    print("Val:")
-    val_windows = pearl_trigger_dataset.get_val_windows(seq_len=1, stride=1, transition_context=1, positive_to_negative=0.25,
-                                                        prefer_hard_negative=True, sample_mode="random")
-    pearl_trigger_dataset.target_distribution(val_windows)
-    print("Test:")
-    test_windows = pearl_trigger_dataset.get_test_windows(seq_len=1, stride=1, transition_context=1)
-    pearl_trigger_dataset.target_distribution(test_windows)
+    def_pearl_dataset = PearlTriggerDataset()
+    print("[Offensive Pearl] Train:")
+    train_windows = def_pearl_dataset.get_train_windows(positive_to_negative=0.333,
+                                                        prefer_hard_negative=True, pearl_type="offensive")
+    def_pearl_dataset.target_distribution(train_windows)
+    print("[Offensive Pearl] Val:")
+    val_windows = def_pearl_dataset.get_val_windows(positive_to_negative=0.25,
+                                                    prefer_hard_negative=True, sample_mode="random", pearl_type="offensive")
+    def_pearl_dataset.target_distribution(val_windows)
+    print("[Offensive Pearl] Test:")
+    test_windows = def_pearl_dataset.get_test_windows(pearl_type="offensive")
+    def_pearl_dataset.target_distribution(test_windows)
+
+
+    def_pearl_dataset = PearlTriggerDataset()
+    print("[Defensive Pearl] Train:")
+    train_windows = def_pearl_dataset.get_train_windows(positive_to_negative=0.333,
+                                                        prefer_hard_negative=True, pearl_type="defensive")
+    def_pearl_dataset.target_distribution(train_windows)
+    print("[Defensive Pearl] Val:")
+    val_windows = def_pearl_dataset.get_val_windows(positive_to_negative=0.25,
+                                                    prefer_hard_negative=True, sample_mode="random", pearl_type="defensive")
+    def_pearl_dataset.target_distribution(val_windows)
+    print("[Defensive Pearl] Test:")
+    test_windows = def_pearl_dataset.get_test_windows(pearl_type="defensive")
+    def_pearl_dataset.target_distribution(test_windows)
+
