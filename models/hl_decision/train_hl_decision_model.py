@@ -12,7 +12,7 @@ import torch
 import xgboost as xgb
 
 
-SEQ_LEN = 20
+SEQ_LEN = 1
 EPOCHS = 50
 
 class TrainXgbModel:
@@ -22,6 +22,14 @@ class TrainXgbModel:
 
     @staticmethod
     def get_X_Y(dataset):
+        if isinstance(dataset, tuple) and len(dataset) == 2:
+            X, Y = dataset
+            X = torch.as_tensor(X, dtype=torch.float32)
+            if X.dim() > 2:
+                X = X.flatten(start_dim=1)
+            Y = torch.as_tensor(Y).long().view(-1)
+            return X, Y
+
         if len(dataset) == 0:
             raise ValueError("empty dataset: no high-level decision windows were generated")
 
@@ -68,4 +76,3 @@ class TrainXgbModel:
 
         accuracy = model.score(val_X, val_Y)
         print(f"Accuracy: {accuracy:.6f}")
-
