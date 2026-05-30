@@ -82,7 +82,7 @@ public class Movement {
         int targetCombo = utils.getTargetCombo();
         ticksLastJump++;
         double probOffCombo = 1 - Math.exp(-0.13 * targetCombo);
-        if (ticksLastJump > 10 && mc.thePlayer.getDistanceToEntity(target) < 3 && Math.random() < probOffCombo) {
+        if (ticksLastJump > 10 && targetCombo >= 2 && mc.thePlayer.getDistanceToEntity(target) < 3 && Math.random() < probOffCombo) {
             jump();
             ticksLastJump = 0;
             mc.thePlayer.sendChatMessage("[Project L1psy] attempted to jump");

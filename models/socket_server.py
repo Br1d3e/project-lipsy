@@ -14,10 +14,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AIM_DIR = os.path.join(BASE_DIR, "aim")
 STRAFE_DIR = os.path.join(BASE_DIR, "strafe")
 BLOCKHIT_DIR = os.path.join(BASE_DIR, "blockhit")
+HL_DIR = os.path.join(BASE_DIR, "hl_decision")
+HEAL_TRIGGER_DIR = os.path.join(HL_DIR, "heal_trigger")
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, AIM_DIR)
 sys.path.insert(0, STRAFE_DIR)
 sys.path.insert(0, BLOCKHIT_DIR)
+sys.path.insert(0, HEAL_TRIGGER_DIR)
 
 from aim.train_aim_model import Aim1dCNN, AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
 from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
@@ -28,12 +31,157 @@ from strafe.train_strafe_model import SEQ_LEN as STRAFE_SEQ_LEN
 from blockhit.train_blockhit_model import BlockhitStackedMLP, Blockhit1dCNN
 from blockhit.train_blockhit_model import SEQ_LEN as BLOCKHIT_SEQ_LEN
 
-
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-OBS_SIZE = 28
+OBS_FEATURES = [
+    "myMotionX",
+    "myMotionY",
+    "myMotionZ",
+    "myYaw",
+    "myPitch",
+    "myDeltaYaw",
+    "myDeltaPitch",
+    "myHp",
+    "myHurtTime",
+    "myMoveForward",
+    "myMoveStrafing",
+    "mySwingProgress",
+    "myUsingItem",
+    "myHoldingSword",
+    "myBlockingSword",
+    "myHasSpeedPotion",
+    "mySpeedDurationTicks",
+    "myFoodLevel",
+    "myCombo",
+    "targetCombo",
+    "pearlCooldownTicksRemaining",
+    "enemyPearlAvailable",
+    "enemyPearlCooldownTicksRemaining",
+    "hotbarHealthPotions",
+    "inventoryFood",
+    "inventorySpeedPotions",
+    "inventoryHealthPotions",
+    "inventoryPearls",
+    "crosshairOnTarget",
+    "ticksSinceLastAttack",
+    "ticksSinceLastBlock",
+    "ticksSinceLastPot",
+    "ticksSinceLastEat",
+    "ticksSinceLastSpeed",
+    "ticksSinceLastDamageTaken",
+    "ticksSinceLastHitLanded",
+    "ticksSinceLastPearl",
+    "ticksSinceLastEnemyPearl",
+    "blockDistanceFront",
+    "blockDistanceBack",
+    "blockDistanceLeft",
+    "blockDistanceRight",
+    "aStrafe",
+    "aAttack",
+    "aUseItem",
+    "targetExists",
+    "targetRelX",
+    "targetRelY",
+    "targetRelZ",
+    "targetDistance",
+    "targetMotionX",
+    "targetMotionY",
+    "targetMotionZ",
+    "targetYaw",
+    "targetPitch",
+    "targetDeltaYaw",
+    "targetDeltaPitch",
+    "targetEstimatedHp",
+    "targetEstimatedPotions",
+    "targetEstimatedPearls",
+    "targetHurtTime",
+    "targetSwingProgress",
+    "targetUsingItem",
+    "targetHasSpeedPotion",
+    "targetSpeedDurationTicks",
+    "targetFood",
+    "targetEating",
+    "targetSpeeding",
+    "targetPearling",
+    "targetPotting",
+    "yawDiffToTarget",
+    "pitchDiffToTarget",
+    "hpDiff",
+    "canHeal",
+    "canPearl",
+    "canSpeed",
+    "canEat",
+    "s_attack",
+    "s_heal",
+    "s_pearl",
+    "s_speed",
+    "s_eat",
+    "s_refill",
+]
+OBS_INDEX = {name: i for i, name in enumerate(OBS_FEATURES)}
+OBS_SIZE = len(OBS_FEATURES)
 AIM_FEATURE_SIZE = 16
 STRAFE_FEATURE_SIZE = 16
 BLOCKHIT_FEATURE_SIZE = 14
+HL_DECISION_FEATURES = [
+    "myHp",
+    "myFoodLevel",
+    "myHasSpeedPotion",
+    "mySpeedDurationTicks",
+    "myCombo",
+    "targetCombo",
+    "pearlCooldownTicksRemaining",
+    "enemyPearlAvailable",
+    "enemyPearlCooldownTicksRemaining",
+    "hotbarHealthPotions",
+    "inventoryFood",
+    "inventorySpeedPotions",
+    "inventoryHealthPotions",
+    "inventoryPearls",
+    "ticksSinceLastAttack",
+    "ticksSinceLastBlock",
+    "ticksSinceLastPot",
+    "ticksSinceLastEat",
+    "ticksSinceLastSpeed",
+    "ticksSinceLastDamageTaken",
+    "ticksSinceLastHitLanded",
+    "ticksSinceLastPearl",
+    "ticksSinceLastEnemyPearl",
+    "blockDistanceFront",
+    "blockDistanceBack",
+    "blockDistanceLeft",
+    "blockDistanceRight",
+    "targetExists",
+    "targetDistance",
+    "targetRelX",
+    "targetRelZ",
+    "targetMotionX",
+    "targetMotionZ",
+    "targetYaw",
+    "targetPitch",
+    "targetDeltaYaw",
+    "targetDeltaPitch",
+    "targetEstimatedHp",
+    "targetEstimatedPotions",
+    "targetHasSpeedPotion",
+    "targetSpeedDurationTicks",
+    "targetFood",
+    "targetEating",
+    "targetSpeeding",
+    "targetPearling",
+    "targetPotting",
+    "hpDiff",
+    "canHeal",
+    "canPearl",
+    "canSpeed",
+    "canEat",
+    "s_attack",
+    "s_heal",
+    "s_pearl",
+    "s_speed",
+    "s_eat",
+    "s_refill",
+]
+HL_DECISION_FEATURE_SIZE = len(HL_DECISION_FEATURES)
 AIM_ACTION_SIZE = 2
 STRAFE_ACTION_SIZE = 1
 BLOCKHIT_ACTION_SIZE = 1
@@ -197,38 +345,37 @@ def read_obs_packet(conn: socket.socket):
 
 
 def get_aim_data(data: np.ndarray):
-    if len(data) < AIM_FEATURE_SIZE:
-        raise ValueError("Aim observation too short: expected %d floats, got %d" % (AIM_FEATURE_SIZE, len(data)))
-    return data[:AIM_FEATURE_SIZE]
+    return get_features(data, [
+        "myMotionX", "myMotionY", "myMotionZ", "myYaw", "myPitch",
+        "myMoveForward", "myMoveStrafing", "targetRelX", "targetRelY", "targetRelZ", "targetDistance",
+        "targetMotionX", "targetMotionY", "targetMotionZ", "yawDiffToTarget", "pitchDiffToTarget",
+    ])
 
 def get_strafe_data(data: np.ndarray):
-    if len(data) < OBS_SIZE:
-        raise ValueError("Strafe observation too short: expected %d, got %d" % (OBS_SIZE, len(data)))
-    # Java obs layout:
-    # 0..3 motion/yaw, 4 myPitch, 5..15 movement/target/aim diffs, 16 myDeltaYaw.
-    # Strafe model FEATURES are:
-    # myMotionX/Y/Z, myYaw, myDeltaYaw, myMoveForward, myMoveStrafing,
-    # targetRelX/Y/Z, targetDistance, targetMotionX/Y/Z, yawDiffToTarget, pitchDiffToTarget.
-    return np.asarray([
-        data[0], data[1], data[2], data[3], data[16],
-        data[5], data[6], data[7], data[8], data[9], data[10],
-        data[11], data[12], data[13], data[14], data[15],
-    ], dtype="<f4")
+    return get_features(data, [
+        "myMotionX", "myMotionY", "myMotionZ", "myYaw", "myDeltaYaw", "myMoveForward", "myMoveStrafing",
+        "targetRelX", "targetRelY", "targetRelZ", "targetDistance",
+        "targetMotionX", "targetMotionY", "targetMotionZ", "yawDiffToTarget", "pitchDiffToTarget",
+    ])
 
 
 def get_blockhit_data(data: np.ndarray):
-    if len(data) < OBS_SIZE:
-        raise ValueError("Blockhit observation too short: expected %d, got %d" % (OBS_SIZE, len(data)))
-    # Blockhit model FEATURES:
-    # aAttack, aStrafe, targetHurtTime, myHurtTime, ticksSinceLastDamageTaken,
-    # ticksSinceLastAttack, targetDistance, targetSwingProgress, mySwingProgress,
-    # myHoldingSword, myUsingItem, crosshairOnTarget, yawDiffToTarget, pitchDiffToTarget.
-    return np.asarray([
-        data[17], data[18], data[19], data[20], data[21], data[22],
-        data[10], data[23], data[24], data[25], data[26], data[27],
-        data[14], data[15],
-    ], dtype="<f4")
+    return get_features(data, [
+        "aAttack", "aStrafe", "targetHurtTime", "myHurtTime", "ticksSinceLastDamageTaken", "ticksSinceLastAttack",
+        "targetDistance", "targetSwingProgress", "mySwingProgress", "myHoldingSword", "myUsingItem",
+        "crosshairOnTarget", "yawDiffToTarget", "pitchDiffToTarget",
+    ])
 
+def get_hl_decision_data(data: np.ndarray):
+    return get_features(data, HL_DECISION_FEATURES)
+
+def get_features(data: np.ndarray, feature_names):
+    if len(data) < OBS_SIZE:
+        raise ValueError("Observation too short: expected %d floats, got %d" % (OBS_SIZE, len(data)))
+    try:
+        return np.asarray([data[OBS_INDEX[name]] for name in feature_names], dtype="<f4")
+    except KeyError as exc:
+        raise KeyError("Unknown observation feature: %s" % exc)
 
 def logits_to_blockhit_action(logits, p_threshold=0.8):
     logits = np.asarray(logits, dtype=np.float32).reshape(-1)
@@ -379,6 +526,10 @@ def run_server():
                 with torch.no_grad():
                     blockhit_logits = blockhit_model(blockhit_tensor).reshape(-1).cpu().numpy()
                     blockhit_y = logits_to_blockhit_action(blockhit_logits, p_threshold=0.3)
+
+                # High-level decision features are decoded now so Java/Python
+                # packet layout stays exercised before trigger models are loaded.
+                hl_decision_x = get_hl_decision_data(obs)
 
                 # Keep legacy Java action layout:
                 # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse]

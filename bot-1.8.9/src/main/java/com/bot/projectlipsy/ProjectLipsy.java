@@ -74,6 +74,7 @@ public class ProjectLipsy {
 
         prevStatus = status;
         statusController(target);
+        models.setDecisionState(status.name());
 
         if ((prevStatus == Status.EAT || prevStatus == Status.SPEED) && status != prevStatus) {
             healing.stopUtilityUse();
