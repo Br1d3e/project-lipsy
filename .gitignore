@@ -55,3 +55,6 @@ recorder-1.7.10/recordings
 # Keep small dataset samples if they exist
 !datasets/samples/
 !datasets/samples/**
+
+# test jupyter
+hl_test.ipynb

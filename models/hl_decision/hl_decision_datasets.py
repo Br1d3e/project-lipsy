@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import os
+import pickle
 
 from models.datasets import Datasets
 from models.datasets import TRAIN_FOLDER
@@ -114,8 +115,7 @@ class HLDecisionDataset:
     label_name = None
     label_type = None
 
-    def __init__(self, datasets=None, features: list[str] = None, label_name=None, label_type=None):
-        self.datasets = datasets if datasets is not None else Datasets(TRAIN_FOLDER, keep_frames=False)
+    def __init__(self, datasets=None, features: list[str] = None, label_name=None, label_type=None, use_cache=False, build_cache=True):
         self.feature_list = FEATURES
         if isinstance(features, list):
             self.feature_list = features
@@ -124,13 +124,40 @@ class HLDecisionDataset:
         if label_type is not None:
             self.label_type = label_type
 
-        self.train_rounds = self.datasets.get_train_data()
-        self.val_rounds = self.datasets.get_val_data()
-        self.test_rounds = self.datasets.get_test_data()
+        self.datasets = datasets if datasets is not None else Datasets(TRAIN_FOLDER, keep_frames=False)
 
-        self.train_frames = self.concatenate_frames(self.train_rounds)
-        self.val_frames = self.concatenate_frames(self.val_rounds)
-        self.test_frames = self.concatenate_frames(self.test_rounds)
+        self.cache_dir = os.path.join(TRAIN_FOLDER, ".cache")
+        if use_cache:
+            self.train_frames = self.load_pickle_cache("train")
+            self.val_frames = self.load_pickle_cache("val")
+            self.test_frames = self.load_pickle_cache("test")
+        else:
+            self.train_rounds = self.datasets.get_train_data()
+            self.val_rounds = self.datasets.get_val_data()
+            self.test_rounds = self.datasets.get_test_data()
+
+            self.train_frames = self.concatenate_frames(self.train_rounds)
+            self.val_frames = self.concatenate_frames(self.val_rounds)
+            self.test_frames = self.concatenate_frames(self.test_rounds)
+
+        if build_cache:
+            self.save_pickle_cache(self.train_frames, "train")
+            self.save_pickle_cache(self.val_frames, "val")
+            self.save_pickle_cache(self.test_frames, "test")
+
+    def cache_name(self, name):
+        return f"hl_v1_{name}.pickle"
+
+    def load_pickle_cache(self, name):
+        path = os.path.join(self.cache_dir, self.cache_name(name))
+        if os.path.exists(path):
+            return pd.read_pickle(path)
+        raise FileNotFoundError(f"Cache {self.cache_name(name)} not found.")
+
+    def save_pickle_cache(self, frames, name):
+        os.makedirs(self.cache_dir, exist_ok=True)
+        path = os.path.join(self.cache_dir, self.cache_name(name))
+        frames.reset_index(drop=True).to_pickle(path)
 
     def _col_labels_states(self, frames: pd.DataFrame, labels) -> pd.DataFrame:
         frames = frames.iloc[np.argsort(frames["recordingTickIndex"].to_numpy())].copy()
