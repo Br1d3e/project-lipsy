@@ -46,6 +46,8 @@ recorder-1.7.10/recordings
 *.hprof
 *.pth
 *.pkl
+*.ubj
+*_xgb_[0-9]*.json
 *.mp4
 *.mov
 *.avi
