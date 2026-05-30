@@ -380,7 +380,6 @@ public class Recorder {
         frame.field("targetPotting", targetExists ? itemsHandler.isSplashHealthPotion(target.getHeldItem()) && target.isUsingItem() : null);
         frame.field("yawDiffToTarget", yawDiffToTarget);
         frame.field("pitchDiffToTarget", pitchDiffToTarget);
-        frame.field("hpDiffRaw", hpDiffRaw);
         frame.field("hpDiff", targetExists ? targetHpTracker.getEstimatedTargetHp() - mc.thePlayer.getHealth() : null);
         writeFrame(frame);
 

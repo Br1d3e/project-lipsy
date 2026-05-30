@@ -10,13 +10,14 @@ import pandas as pd
 
 PRE_TICKS = 20
 POST_TICKS = 80
-RETREAT_WINDOW_TICKS = 60
 ANCHOR_COOLDOWN_TICKS = 20
 ATTACK_MERGE_GAP_TICKS = 3 * 20
 ATTACK_PRE_TICKS = 10
 ATTACK_POST_TICKS = 30
-FRONT_YAW_DIFF_DEGREES = 20.0
-TURN_YAW_DIFF_DEGREES = 140.0
+CONSUME_THRESHOLD = 30
+SPEED_COMPLETE_DURATION_TICKS = 1580
+HEAL_PRE_TARGET_LOOKBACK_TICKS = 5
+FULL_HEALTH_POTION_COUNT = 29
 
 
 def parse_args():
@@ -152,6 +153,13 @@ def series_numeric(df, column, default=np.nan):
     return pd.to_numeric(df[column], errors="coerce")
 
 
+def first_existing_column(df, columns):
+    for column in columns:
+        if column in df.columns:
+            return column
+    return None
+
+
 def item_contains(frames, needles):
     text = pd.Series("", index=frames.index, dtype="object")
     for column in ("myHeldItemType", "myHeldItem"):
@@ -217,6 +225,7 @@ def build_item_use_segment(frames, ticks, use_mask, event_use_ticks, start_idx, 
         "end_tick": end_tick,
         "tick": use_ticks[0],
         "use_ticks": use_ticks,
+        "use_item_ticks": len(frame_use_ticks),
     }
 
 
@@ -317,32 +326,72 @@ def target_using_item_between(frames, start_tick, end_tick):
     return bool(series_bool(window, "targetUsingItem").any()) if not window.empty else False
 
 
-def yaw_diff_at_tick(frames, tick):
+def target_exists_before(frames, tick, lookback_ticks=HEAL_PRE_TARGET_LOOKBACK_TICKS):
+    column = first_existing_column(frames, ("targetExists", "target_exists"))
+    if column is None:
+        return True
+    tick_name = tick_col(frames)
+    ticks = series_numeric(frames, tick_name)
+    window = frames[(ticks >= tick - lookback_ticks) & (ticks < tick)]
+    if window.empty:
+        return False
+    return bool(series_bool(window, column).all())
+
+
+def health_potion_count_at(frames, tick):
+    if "inventoryHealthPotions" not in frames.columns:
+        return None
     row = frame_at_or_before(frames, tick)
-    if row is None or "yawDiffToTarget" not in row or pd.isna(row["yawDiffToTarget"]):
+    if row is None or pd.isna(row.get("inventoryHealthPotions")):
         return None
-    return float(row["yawDiffToTarget"])
+    return int(row.get("inventoryHealthPotions"))
 
 
-def suggested_type_from_yaw(frames, tick, label):
-    yaw_diff = yaw_diff_at_tick(frames, tick)
-    if yaw_diff is None:
+def valid_health_potion_inventory(frames, tick, allow_full=False):
+    potions = health_potion_count_at(frames, tick)
+    if potions is None:
+        return True
+    if potions <= 0:
+        return False
+    return allow_full or potions < FULL_HEALTH_POTION_COUNT
+
+
+def health_potion_count_drops_below_full(frames, start_tick, end_tick):
+    if "inventoryHealthPotions" not in frames.columns:
+        return True
+    tick_name = tick_col(frames)
+    ticks = series_numeric(frames, tick_name)
+    window = frames[(ticks >= start_tick) & (ticks <= end_tick)]
+    if window.empty:
+        return False
+    values = series_numeric(window, "inventoryHealthPotions").dropna()
+    if values.empty:
+        return False
+    return bool((values > 0).any() and (values < FULL_HEALTH_POTION_COUNT).any())
+
+
+def max_numeric_between(frames, columns, start_tick, end_tick):
+    column = first_existing_column(frames, columns)
+    if column is None:
         return None
+    tick_name = tick_col(frames)
+    ticks = series_numeric(frames, tick_name)
+    window = frames[(ticks >= start_tick) & (ticks <= end_tick)]
+    if window.empty:
+        return None
+    values = series_numeric(window, column)
+    if values.dropna().empty:
+        return None
+    return float(values.max())
 
-    abs_yaw_diff = abs(yaw_diff)
-    if abs_yaw_diff >= TURN_YAW_DIFF_DEGREES:
-        return "turn"
-    if abs_yaw_diff <= FRONT_YAW_DIFF_DEGREES:
-        if label == "heal":
-            return "front"
-        if label == "retreat":
-            return "s"
-    return None
+
+def segment_has_completed_use(segment, threshold=CONSUME_THRESHOLD):
+    return int(segment.get("use_item_ticks") or 0) >= threshold
 
 
 def anchor_dict(session_id, tick, kind, suggested_label, suggested_type=None,
                 suggested_reward=None, start_offset=PRE_TICKS, end_offset=POST_TICKS,
-                source=None, start_tick=None, end_tick=None, review_policy="review"):
+                source=None, start_tick=None, end_tick=None, review_policy="auto"):
     tick = int(tick)
     return {
         "session": session_id,
@@ -360,7 +409,7 @@ def anchor_dict(session_id, tick, kind, suggested_label, suggested_type=None,
 
 def add_anchor(anchors, session_id, tick, kind, suggested_label, suggested_type=None,
                suggested_reward=None, start_offset=PRE_TICKS, end_offset=POST_TICKS, source=None,
-               cooldown=ANCHOR_COOLDOWN_TICKS, start_tick=None, end_tick=None, review_policy="review"):
+               cooldown=ANCHOR_COOLDOWN_TICKS, start_tick=None, end_tick=None, review_policy="auto"):
     for anchor in anchors:
         if anchor["_kind"] == kind and abs(anchor["_tick"] - int(tick)) <= cooldown:
             return
@@ -388,32 +437,38 @@ def generate_healing_anchors(frames, events, session_id, anchors):
         | text.str.contains("healing", regex=False)
     )
     for segment in item_use_segments(frames, health_pot_mask, event_ticks(events, ["POTION_USE"])):
-        suggested_type = suggested_type_from_yaw(frames, segment["tick"], "heal")
+        if not valid_health_potion_inventory(frames, segment["start_tick"], allow_full=True):
+            continue
+        if not health_potion_count_drops_below_full(frames, segment["start_tick"], segment["end_tick"] + 10):
+            continue
+        if not target_exists_before(frames, segment["start_tick"]):
+            continue
         add_anchor(
             anchors, session_id, segment["tick"], "heal_candidate", "heal",
-            suggested_type=suggested_type,
             source="held_potion_segment_use",
             start_tick=segment["start_tick"],
             end_tick=segment["end_tick"],
-            suggested_reward=1,
             cooldown=0,
-            review_policy="review",
+            review_policy="auto",
         )
     my_hp = frames["myHp"]
     for idx in my_hp.index:
         regen = my_hp.loc[idx] - my_hp.loc[idx - 1] if idx > 0 else 0
         if regen > 2:
             tick = frames[tick_col(frames)].loc[idx]
-            suggested_type = suggested_type_from_yaw(frames, tick, "heal")
+            if not valid_health_potion_inventory(frames, tick - 5, allow_full=True):
+                continue
+            if not health_potion_count_drops_below_full(frames, tick - 10, tick + 5):
+                continue
+            if not target_exists_before(frames, tick):
+                continue
             add_anchor(
                 anchors, session_id, tick, "heal_candidate", "heal",
-                suggested_type=suggested_type,
                 source="health_burst",
                 start_tick= tick - 5,
                 end_tick= tick + 5,
-                suggested_reward=1 if regen >= 6 else 0,
                 cooldown=0,
-                review_policy="review",
+                review_policy="auto",
             )
 
 
@@ -443,10 +498,10 @@ def generate_pearl_anchors(frames, events, session_id, anchors):
             suggested_type = "tryhard"
         elif attack_during_segment and target_using_item_between(frames, start_tick, end_tick):
             suggested_type = "agro"
-        elif not attack_during_segment:
-            suggested_type = "retreat"
+        # elif not attack_during_segment:
+        #     suggested_type = "retreat"
         else:
-            suggested_type = None
+            suggested_type = "tryhard"
 
         add_anchor(
             anchors, session_id, tick, "pearl_candidate", "pearl",
@@ -454,44 +509,14 @@ def generate_pearl_anchors(frames, events, session_id, anchors):
             source="held_pearl_segment_use",
             start_tick=start_tick,
             end_tick=end_tick,
-            suggested_reward=1,
             cooldown=0,
-            review_policy="review",
+            review_policy="auto",
         )
 
 
 def generate_retreat_anchors(frames, session_id, anchors):
-    if frames.empty:
-        return
-    tick_name = tick_col(frames)
-    ticks = series_numeric(frames, tick_name)
-    target_exists = series_bool(frames, "targetExists") if "targetExists" in frames.columns else pd.Series(True, index=frames.index)
-    my_hp = series_numeric(frames, "myHp")
-    target_distance = series_numeric(frames, "targetDistance")
-    yaw_diff = series_numeric(frames, "yawDiffToTarget")
-    hp_diff = series_numeric(frames, "hpDiff")
-
-    low_hp = (my_hp <= 8.0) | (hp_diff <= -2.0)
-    hard_yaw_away = yaw_diff.abs() >= 110.0
-    distance_change = target_distance.diff(RETREAT_WINDOW_TICKS)
-    distance_increasing = distance_change >= 2.0
-    retreat_mask = target_exists & (low_hp | hard_yaw_away | distance_increasing)
-
-    last_added = -10 ** 9
-    for idx in frames.index[rising_edges(retreat_mask)]:
-        tick = int(ticks.loc[idx])
-        if tick - last_added < RETREAT_WINDOW_TICKS:
-            continue
-        add_anchor(
-            anchors, session_id, tick, "retreat_candidate", "retreat",
-            suggested_type=suggested_type_from_yaw(frames, tick, "retreat"),
-            source="hp_yaw_or_distance_rule",
-            start_offset=20,
-            end_offset=RETREAT_WINDOW_TICKS,
-            cooldown=RETREAT_WINDOW_TICKS,
-            review_policy="review",
-        )
-        last_added = tick
+    # Retreat labeling is deprecated in the current workflow.
+    return
 
 
 def generate_attack_anchors(frames, events, session_id, anchors):
@@ -587,14 +612,23 @@ def generate_eat_anchors(frames, events, session_id, anchors):
         "steak",
     ])
     for segment in item_use_segments(frames, food_mask, event_ticks(events, ["FOOD_EAT"])):
+        if not segment_has_completed_use(segment):
+            continue
+        food_after = max_numeric_between(
+            frames,
+            ("myFood", "myFoodLevel"),
+            segment["tick"],
+            segment["end_tick"] + 10,
+        )
+        if food_after is None or food_after < 20:
+            continue
         add_anchor(
             anchors, session_id, segment["tick"], "eat_candidate", "eat",
             source="held_food_segment_use",
             start_tick=segment["start_tick"],
             end_tick=segment["end_tick"],
-            suggested_reward=1,
             cooldown=0,
-            review_policy="review",
+            review_policy="auto",
         )
 
 def generate_speed_anchors(frames, events, session_id, anchors):
@@ -607,14 +641,23 @@ def generate_speed_anchors(frames, events, session_id, anchors):
         )
     )
     for segment in item_use_segments(frames, speed_mask, event_ticks(events, ["SPEED_USE"])):
+        if not segment_has_completed_use(segment):
+            continue
+        speed_after = max_numeric_between(
+            frames,
+            ("mySpeedDurationTicks", "mySpeedDuration"),
+            segment["tick"],
+            segment["end_tick"] + 10,
+        )
+        if speed_after is None or speed_after <= SPEED_COMPLETE_DURATION_TICKS:
+            continue
         add_anchor(
             anchors, session_id, segment["tick"], "speed_candidate", "speed",
             source="held_speed_segment_use",
             start_tick=segment["start_tick"],
             end_tick=segment["end_tick"],
-            suggested_reward=1,
             cooldown=0,
-            review_policy="review",
+            review_policy="auto",
         )
 
 def prepare_frames(frames):
@@ -630,6 +673,13 @@ def prepare_frames(frames):
         else:
             frames = frames[target_exists].reset_index(drop=True)
     return frames
+
+
+def sort_frames(frames):
+    if frames.empty:
+        return frames
+    tick_name = tick_col(frames)
+    return frames.sort_values(tick_name).reset_index(drop=True)
 
 
 def write_anchors(path, anchors):
@@ -663,18 +713,20 @@ def main():
         meta = json.load(f)
 
     events = read_jsonl(events_path)
-    frames = prepare_frames(read_jsonl(frames_path))
+    raw_frames = read_jsonl(frames_path)
+    all_frames = sort_frames(raw_frames)
+    frames = prepare_frames(raw_frames)
 
     session_id = meta.get("sessionId") or meta.get("session_id") or session_dir.name
     print("Auto-generating label anchors for session %s" % session_id)
 
     anchors = []
-    generate_healing_anchors(frames, events, session_id, anchors)
-    generate_pearl_anchors(frames, events, session_id, anchors)
-    generate_speed_anchors(frames, events, session_id, anchors)
-    generate_eat_anchors(frames, events, session_id, anchors)
-    generate_refill_anchors(frames, session_id, anchors)
-    generate_retreat_anchors(frames, session_id, anchors)
+    generate_healing_anchors(all_frames, events, session_id, anchors)
+    generate_pearl_anchors(all_frames, events, session_id, anchors)
+    generate_speed_anchors(all_frames, events, session_id, anchors)
+    generate_eat_anchors(all_frames, events, session_id, anchors)
+    generate_refill_anchors(all_frames, session_id, anchors)
+    # generate_retreat_anchors(frames, session_id, anchors)
     generate_attack_anchors(frames, events, session_id, anchors)
 
     output_path = Path(args.output).expanduser() if args.output else session_dir / "anchors.jsonl"

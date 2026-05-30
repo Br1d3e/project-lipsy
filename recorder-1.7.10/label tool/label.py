@@ -326,6 +326,8 @@ def load_labels_from_anchors(labels, anchors, session_id):
 
 
 def split_anchors(anchors, session_id, labels, rejected_anchors):
+    # Review mode is deprecated. Non-ignored anchors are imported as editable
+    # auto labels, and bad anchors should be corrected or deleted manually.
     review_queue = []
     if anchors.empty:
         return review_queue
@@ -343,14 +345,16 @@ def split_anchors(anchors, session_id, labels, rejected_anchors):
         if anchor_id is not None and (anchor_id in accepted_anchor_ids or anchor_id in rejected_anchor_ids):
             continue
 
-        policy = anchor.get("review_policy") or "review"
+        # ignore retreat labels
+        anchor_name = str(anchor.get("suggested_label") or anchor.get("label")).strip().lower()
+        if anchor_name == "retreat":
+            continue
+
+        policy = anchor.get("review_policy") or "auto"
         if policy == "ignore":
             continue
-        if policy == "auto":
-            label_id = next_auto_label_id(labels)
-            labels[label_id] = label_from_anchor(anchor, session_id, label_id)
-        else:
-            review_queue.append(anchor)
+        label_id = next_auto_label_id(labels)
+        labels[label_id] = label_from_anchor(anchor, session_id, label_id)
     return review_queue
 
 
@@ -363,7 +367,6 @@ def navigation_menu():
     e - edit label
     d - delete label
     m - merge labels
-    review - review queued anchors
     v - view labels
     f - find labels
     g <tick> - set cursor tick
@@ -920,7 +923,7 @@ def print_summary(total_anchors, review_queue, rejected_anchors, labels):
     print("Summary:")
     print("  total anchors: %d" % total_anchors)
     print("  auto accepted: %d" % auto_count)
-    print("  review required: %d" % len(review_queue))
+    print("  review required: 0 (deprecated)")
     print("  rejected: %d" % len(rejected_anchors))
     print("  final manual labels: %d" % manual_count)
     print("  total labels: %d" % len(labels))
@@ -1176,7 +1179,7 @@ def main():
         instructions = parse_instructions(cmd)
         op = cmd[0]
         if cmd == "review":
-            review_mode(labels, session_id, review_queue, rejected_anchors)
+            print("Review mode is deprecated. Anchors are imported as editable auto labels; use v/f/e/d to inspect, correct, or remove them.")
             print_summary(total_anchors, review_queue, rejected_anchors, labels)
         elif op == "r":
             print(navigation_menu())
