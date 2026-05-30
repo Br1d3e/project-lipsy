@@ -81,12 +81,11 @@ FEATURES = [
     "s_speed",
     "s_eat",
     "s_refill",
-    "s_retreat"
 ]
 
-STATES = ["s_attack", "s_heal", "s_pearl", "s_speed", "s_eat", "s_refill", "s_retreat"]
+STATES = ["s_attack", "s_heal", "s_pearl", "s_speed", "s_eat", "s_refill"]
 DEFAULT_TRANSITION_CONTEXT = 20
-TARGETS = {"attack": 0, "heal": 1, "pearl": 2, "speed": 3, "eat": 4, "refill": 5, "retreat": 6}
+TARGETS = {"attack": 0, "heal": 1, "pearl": 2, "speed": 3, "eat": 4, "refill": 5}
 FEATURE_DEFAULTS = {
     "ticksSinceLastAttack": 100000,
     "ticksSinceLastBlock": 100000,
@@ -103,7 +102,6 @@ FEATURE_DEFAULTS = {
     "blockDistanceRight": 50,
     "targetEstimatedPotions": 29,
     "s_attack": 0,
-    "s_retreat": 0,
     "s_heal": 0,
     "s_pearl": 0,
     "s_speed": 0,
