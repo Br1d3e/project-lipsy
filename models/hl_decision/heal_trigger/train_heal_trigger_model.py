@@ -7,11 +7,10 @@ import xgboost as xgb
 import numpy as np
 from sklearn.metrics import log_loss
 
-SEQ_LEN = 1
 CONTEXT = 20
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "heal_trigger_xgb_4.json")
+MODEL_PATH = os.path.join(BASE_DIR, "heal_trigger_xgb_5.json")
 
 class TrainHealXgb(TrainXgbModel):
     def __init__(self, train_data, val_data):
@@ -65,7 +64,7 @@ class TrainHealXgb(TrainXgbModel):
 
 
 if __name__ == "__main__":
-    heal_trigger_dataset = HealTriggerDataset(use_cache=True, build_cache=False)
+    heal_trigger_dataset = HealTriggerDataset(use_cache=False, build_cache=True)
     train_data = heal_trigger_dataset.get_train_X_Y(transition_context=CONTEXT, prefer_hard_negative=True,
                                                     positive_to_negative=0.20, sample_mode="even")
     val_data = heal_trigger_dataset.get_val_X_Y(transition_context=CONTEXT,
