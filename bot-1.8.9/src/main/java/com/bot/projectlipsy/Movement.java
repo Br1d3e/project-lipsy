@@ -66,15 +66,15 @@ public class Movement {
         if (strafeAxis == 0) {
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), false);
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindRight.getKeyCode(), false);
-            testMsg("[Project Lipsy] straight");
+//            testMsg("[Project Lipsy] straight");
         } else if (strafeAxis == -1) {
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindRight.getKeyCode(), false);
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), true);
-            testMsg("[Project Lipsy] left");
+//            testMsg("[Project Lipsy] left");
         } else if (strafeAxis == 1) {
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), false);
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindRight.getKeyCode(), true);
-            testMsg("[Project Lipsy] right");
+//            testMsg("[Project Lipsy] right");
         }
     }
 
@@ -85,7 +85,7 @@ public class Movement {
         if (ticksLastJump > 10 && targetCombo >= 2 && mc.thePlayer.getDistanceToEntity(target) < 3 && Math.random() < probOffCombo) {
             jump();
             ticksLastJump = 0;
-            mc.thePlayer.sendChatMessage("[Project L1psy] attempted to jump");
+//            mc.thePlayer.sendChatMessage("[Project L1psy] attempted to jump");
         }
     }
 
