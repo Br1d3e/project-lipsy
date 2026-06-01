@@ -111,21 +111,6 @@ public class Clicking {
         utils.updateCombos(target);
         utils.switchItem("Diamond Sword");
 
-        double targetHp = target.getHealth();   // TODO: replace with target health estimator
-        double hpDiff = mc.thePlayer.getHealth() - targetHp;
-
-        double dx = mc.thePlayer.posX - target.posX;
-        double dz = mc.thePlayer.posZ - target.posZ;
-        float targetSupposedYaw = MathHelper.wrapAngleTo180_float((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90F));
-
-        boolean hasCombo = utils.getMyCombo() >= MIN_COMBO;
-        boolean availableHp = targetHp <= COMBO_TARGET_HP && hpDiff >= MIN_HP_DIFF;
-        boolean targetTurning = Math.abs(MathHelper.wrapAngleTo180_float(targetSupposedYaw - target.rotationYaw)) > TURN_YAW;
-
-        boolean lowDistance = mc.thePlayer.getDistanceToEntity(target) <= MAX_BURST_DISTANCE;
-        Entity crossHairEntity = mc.objectMouseOver == null ? null : mc.objectMouseOver.entityHit;
-        boolean crossHairOnTarget = crossHairEntity == target;
-
         updateClickScores(target);
         computeProbabilities();
 
@@ -136,21 +121,21 @@ public class Clicking {
             if (comboProb >= 0.6) {
                 setClickMode(CLICK_MODE.COMBO);
                 if (!lastMode.equals("combo")) {
-                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: combo mode");
+//                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: combo mode");
                     lastMode = "combo";
                 }
                 resetScores();
             } else if (burstProb >= 0.5) {
                 setClickMode(CLICK_MODE.BURST);
                 if (!lastMode.equals("burst")) {
-                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: burst mode");
+//                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: burst mode");
                     lastMode = "burst";
                 }
                 resetScores();
             } else {
                 setClickMode(CLICK_MODE.SPAM);
                 if (!lastMode.equals("spam")) {
-                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: spam mode");
+//                    mc.thePlayer.sendChatMessage("[Project L1psy] Click: spam mode");
                     lastMode = "spam";
                 }
                 resetScores();

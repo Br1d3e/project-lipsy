@@ -6,6 +6,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.projectile.EntityPotion;
 import net.minecraft.potion.Potion;
+import net.minecraft.util.MathHelper;
 
 import java.util.HashSet;
 import java.util.Iterator;
@@ -43,6 +44,13 @@ public class Healing {
     private final Set<Integer> seenBotPotionIds = new HashSet<Integer>();
     private final Set<Integer> currentPotEntityIds = new HashSet<Integer>();
 
+    private double frontScore = 0D;
+    private double turnScore = 0D;
+    private double fastScore = 0D;
+    private double frontProb = 0D;
+    private double turnProb = 0D;
+    private double fastProb = 0D;
+
     public Healing(Minecraft mc, Movement movement, Retreat retreat) {
         this.mc = mc;
         this.utils = new utils(mc);
@@ -76,15 +84,87 @@ public class Healing {
         }
     }
 
+    private void resetScores() {
+        frontScore = 0D;
+        turnScore = 0D;
+        fastScore = 0D;
+    }
+
+    private void updateHealScores(EntityPlayer target) {
+        if (target == null) return;
+
+        double targetDistance = mc.thePlayer.getDistanceToEntity(target);
+        double targetHp = target.getHealth();
+        double hpDiff = mc.thePlayer.getHealth() - targetHp;
+        int myCombo = utils.getMyCombo();
+        int targetCombo = utils.getTargetCombo();
+
+        double dy = mc.thePlayer.posY - target.posY;
+        double dx = mc.thePlayer.posX - target.posX;
+        double dz = mc.thePlayer.posZ - target.posZ;
+        float targetSupposedYaw = MathHelper.wrapAngleTo180_float((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90F));
+        boolean targetTurning = Math.abs(MathHelper.wrapAngleTo180_float(
+                targetSupposedYaw - target.rotationYaw)) > 120;
+        boolean myOnGround = mc.thePlayer.onGround;
+
+        if (targetDistance <= 1.5D) {
+            frontScore = Math.max(frontScore - 0.3D, 0);
+            turnScore += 0.1D;
+            fastScore += 0.15D;
+        } else if (targetDistance <= 4D) {
+            frontScore = Math.max(frontScore - 0.2D, 0);
+            turnScore += 0.15D;
+            fastScore += 0.1D;
+        } else if (targetDistance > 6D) {
+            fastScore -= 0.3D;
+            turnScore -= 0.05D;
+            frontScore += 0.4D;
+        }
+        if (myCombo >= 3 || targetTurning) {
+            frontScore += myCombo * 0.05 + 0.15D;
+            turnScore = Math.max(turnScore - myCombo * 0.3, turnScore);
+            fastScore -= 0.3D;
+        }
+        if (!myOnGround || dy > 0.3D) {
+            fastScore += 0.15D;
+            turnScore += 0.05D;
+            frontScore -= 0.2D;
+        }
+        if (targetCombo >= 2) {
+            turnScore += targetCombo * 0.05 + 0.15D;
+            fastScore += 0.05D;
+            frontScore = Math.max(frontScore - targetCombo * 0.3, frontScore);
+        }
+        if (targetHp < 8D || hpDiff >= 5D) {
+            frontScore += 0.1D;
+            fastScore += 0.2D;
+            turnScore -= 0.1D;
+        }
+    }
+
+    private void computeProbabilities() {
+        double expSum = Math.exp(frontScore) + Math.exp(turnScore) + Math.exp(fastScore);
+        frontProb = Math.exp(frontScore) / expSum;
+        turnProb = Math.exp(turnScore) / expSum;
+        fastProb = Math.exp(fastScore) / expSum;
+        mc.thePlayer.sendChatMessage(
+                "turnProb: " + String.format("%.2f", turnProb) +
+                "frontProb: " + String.format("%.2f", frontProb) +
+                "fastProb: " + String.format("%.2f", fastProb)
+        );
+    }
+
     public void updatePotMacro(EntityPlayer target) {
         if (potState == HealingState.NONE || target == null || mc.thePlayer == null) return;
 
         updateBotPotionHistory();
         potTicks ++;
 
-        // distance based pot mode heuristics
-        // replace with classification model
-        double targetDistance = mc.thePlayer.getDistanceToEntity(target);
+        utils.updateCombos(target);
+        updateHealScores(target);
+        computeProbabilities();
+
+//        double targetDistance = mc.thePlayer.getDistanceToEntity(target);
 //        if (targetDistance <= 3D) {
 //            if (mc.thePlayer.onGround) {
 //                potMode = HealingMode.TURN;
@@ -96,15 +176,26 @@ public class Healing {
 //                fastPot(target);
 //            }
 //        } else
-        if (potTicks == 1) {
-//            potMode = targetDistance < 6D ? HealingMode.TURN : HealingMode.FRONT;
-            if (targetDistance <= 3D) {
-                potMode = mc.thePlayer.onGround ? HealingMode.TURN : HealingMode.FAST;
-            } else if (targetDistance < 7D) {
-                potMode = HealingMode.TURN;
-            } else {
-                potMode = HealingMode.FRONT;
-            }
+//        if (potTicks == 1) {
+//          potMode = targetDistance < 6D ? HealingMode.TURN : HealingMode.FRONT;
+//            if (targetDistance <= 3D) {
+//                potMode = mc.thePlayer.onGround ? HealingMode.TURN : HealingMode.FAST;
+//            } else if (targetDistance <= 6D) {
+//                potMode = HealingMode.TURN;
+//            } else {
+//                potMode = HealingMode.FRONT;
+//            }
+//        }
+
+        if (fastProb >= 0.38D) {
+            potMode = HealingMode.FAST;
+            resetScores();
+        } else if (frontProb >= 0.38D) {
+            potMode = HealingMode.FRONT;
+            resetScores();
+        } else {
+            potMode = HealingMode.TURN;
+            resetScores();
         }
 
         if (potMode == HealingMode.TURN) {
@@ -125,7 +216,7 @@ public class Healing {
             return;
         }
 
-        double yawOffset = utils.getRandomOffset(5F);
+        double yawOffset = utils.getRandomOffset(2F);
         float lookYaw = utils.getTargetYaw(target) + (float) yawOffset;
         movement.sprint();
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), false);
@@ -136,10 +227,10 @@ public class Healing {
             mc.thePlayer.rotationPitch = 8F;
             mc.thePlayer.sendChatMessage("Front Pot");
         } else if (potTicks == 2) {
-            mc.thePlayer.rotationPitch = 12F;
+            mc.thePlayer.rotationPitch = 20F;
         } else if (potTicks == 5) {
             potState = HealingState.POTTING;
-            mc.thePlayer.rotationPitch = 20F;
+            mc.thePlayer.rotationPitch = 25F;
             utils.switchItem("Splash Potion of Healing");
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
@@ -195,7 +286,7 @@ public class Healing {
             return;
         }
 
-        double yawOffset = utils.getRandomOffset(5F);
+        double yawOffset = utils.getRandomOffset(2F);
         float targetYaw = utils.getTargetYaw(target) + (float) yawOffset;
         float retreatYaw = retreat.getRetreatYaw(target);
 
@@ -214,7 +305,7 @@ public class Healing {
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), false);
             movement.sprint();
             mc.thePlayer.rotationPitch = 45F;
-        } else if (potTicks == 4) {
+        } else if (potTicks == 6) {
             utils.switchItem("Splash Potion of Healing");
             movement.sprint();
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
@@ -223,10 +314,13 @@ public class Healing {
             waitingForCurrentPotExplosion = true;
             currentPotExploded = false;
             currentPotEntityIds.clear();
-        } else if (potTicks == 6) {
+        } else if (potTicks == 7) {
             movement.sprint();
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
             lastPotTime = System.currentTimeMillis();
+        } else if (potTicks == 8) {
+//            movement.sprint();
+            mc.thePlayer.rotationYaw = targetYaw;
         }
     }
 
