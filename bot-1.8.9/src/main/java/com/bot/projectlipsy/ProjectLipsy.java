@@ -25,6 +25,7 @@ public class ProjectLipsy {
     private ModelConnect models;
     private Blockhit blockhit;
     private Retreat retreat;
+    private float[] actions;
 
     private enum Status{
         ATTACK,
@@ -63,6 +64,7 @@ public class ProjectLipsy {
             return;
         }
 
+
         EntityPlayer target = findClosestPlayer();
         if (target == null) {
             blockhit.cancel("target missing");
@@ -70,7 +72,14 @@ public class ProjectLipsy {
             return;
         }
 
+        models.sendObs(target);
+        actions = models.getActions();
+
         utils.updateCombos(target);
+
+        if (prevStatus != status) {
+            mc.thePlayer.sendChatMessage("[Project L1psy] Status: " + status);
+        }
 
         prevStatus = status;
         statusController(target);
@@ -86,8 +95,6 @@ public class ProjectLipsy {
 
         switch (status) {
             case ATTACK:
-                models.sendObs(target);
-                float[] actions = models.getActions();
                 movement.update(target, actions);
                 aiming.update(target, actions);
                 clicking.update(target);
@@ -124,7 +131,6 @@ public class ProjectLipsy {
                 break;
 
         }
-
     }
 
     private void statusController(EntityPlayer target) {
@@ -134,9 +140,25 @@ public class ProjectLipsy {
             return;
         }
 
-        // Health check for retreating/healing
-        if (this.mc.thePlayer.getHealth() <= 10) {
-            if (healing.canPot() && utils.hasItem("Splash Potion of Healing")) {
+        // heal prediction from actions vector
+        boolean actionsAvailable = actions != null && actions.length >= 6;
+        boolean predPot = actionsAvailable && actions[5] == 1.0F;
+        boolean canHeal = healing.canPot() && utils.hasItem("Splash Potion of Healing");
+        boolean shouldHeal = mc.thePlayer.getHealth() <= 14;
+        boolean ruleShouldHeal = mc.thePlayer.getHealth() <= 12;
+        boolean mustHeal = mc.thePlayer.getHealth() <= 4;
+
+        if (mustHeal && canHeal) {
+            healing.startHealingSequence();
+            status = Status.HEAL;
+            mc.thePlayer.sendChatMessage("[Project L1psy] Must heal. HP: " + mc.thePlayer.getHealth());
+        } else if (actionsAvailable) {
+            if (predPot && canHeal && shouldHeal) {
+                healing.startHealingSequence();
+                status = Status.HEAL;
+            }
+        } else {        // rule-based fallback
+            if (canHeal & ruleShouldHeal) {
                 healing.startHealingSequence();
                 status = Status.HEAL;
             } else {

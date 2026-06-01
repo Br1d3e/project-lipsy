@@ -31,6 +31,12 @@ from strafe.train_strafe_model import SEQ_LEN as STRAFE_SEQ_LEN
 from blockhit.train_blockhit_model import BlockhitStackedMLP, Blockhit1dCNN
 from blockhit.train_blockhit_model import SEQ_LEN as BLOCKHIT_SEQ_LEN
 
+from hl_decision.heal_trigger.train_heal_trigger_model import MODEL_PATH as HEAL_TRIGGER_MODEL_PATH
+if not os.path.exists(HEAL_TRIGGER_MODEL_PATH):
+    HEAL_TRIGGER_MODEL_PATH = os.path.join(HEAL_TRIGGER_DIR, "heal_trigger_xgb_5.json")
+
+import xgboost as xgb
+
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 OBS_FEATURES = [
     "myMotionX",
@@ -185,7 +191,8 @@ HL_DECISION_FEATURE_SIZE = len(HL_DECISION_FEATURES)
 AIM_ACTION_SIZE = 2
 STRAFE_ACTION_SIZE = 1
 BLOCKHIT_ACTION_SIZE = 1
-ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE + BLOCKHIT_ACTION_SIZE
+HEAL_TRIGGER_ACTION_SIZE = 1
+ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE + BLOCKHIT_ACTION_SIZE + HEAL_TRIGGER_ACTION_SIZE
 STRAFE_OUTPUT_SIZE = 3
 BLOCKHIT_OUTPUT_SIZE = 2
 
@@ -292,7 +299,7 @@ def load_model(path: str, input_dim: int, output_dim: int, default_model_class_n
     return loaded
 
 AIM_MODEL_CONFIG = {
-    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_8.pth"),
+    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_6.pth"),
     "INPUT_DIM" : AIM_FEATURE_SIZE * AIM_SEQ_LEN,
     "OUTPUT_DIM": AIM_ACTION_SIZE
 }
@@ -381,6 +388,10 @@ def logits_to_blockhit_action(logits, p_threshold=0.8):
     logits = np.asarray(logits, dtype=np.float32).reshape(-1)
     exp_logits = np.exp(logits - np.max(logits))
     probs = exp_logits / exp_logits.sum()
+    return 1.0 if probs[1] > p_threshold else 0.0
+
+def probs_to_heal_trigger(probs, p_threshold=0.65):
+    probs = np.asarray(probs, dtype=np.float32).reshape(-1)
     return 1.0 if probs[1] > p_threshold else 0.0
 
 def build_action_packet(seq: int, actions: list):
@@ -477,7 +488,11 @@ def run_server():
     blockhit_model.eval()
     blockhit_seq_len = infer_seq_len(blockhit_model, BLOCKHIT_FEATURE_SIZE, BLOCKHIT_MODEL_CONFIG["INPUT_DIM"])
 
-    print("Loaded models: aim_seq_len=%d strafe_seq_len=%d blockhit_seq_len=%d" % (aim_seq_len, strafe_seq_len, blockhit_seq_len))
+    heal_trigger_model = xgb.XGBClassifier()
+    heal_trigger_model.load_model(HEAL_TRIGGER_MODEL_PATH)
+
+    print("Loaded models: aim_seq_len=%d strafe_seq_len=%d blockhit_seq_len=%d"
+          % (aim_seq_len, strafe_seq_len, blockhit_seq_len))
 
     while True:
         conn, addr = server.accept()
@@ -527,13 +542,18 @@ def run_server():
                     blockhit_logits = blockhit_model(blockhit_tensor).reshape(-1).cpu().numpy()
                     blockhit_y = logits_to_blockhit_action(blockhit_logits, p_threshold=0.3)
 
-                # High-level decision features are decoded now so Java/Python
-                # packet layout stays exercised before trigger models are loaded.
+                # High-level decision
                 hl_decision_x = get_hl_decision_data(obs)
+
+                # Heal trigger
+                heal_probs = heal_trigger_model.predict_proba(hl_decision_x.reshape(1, -1))[0]
+                heal_y = probs_to_heal_trigger(heal_probs)
 
                 # Keep legacy Java action layout:
                 # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse]
-                action_list = np.concatenate((aim_y, np.asarray([strafe_y, strafe_confidence, blockhit_y], dtype="<f4"))).tolist()
+                action_list = np.concatenate((
+                    aim_y,
+                    np.asarray([strafe_y, strafe_confidence, blockhit_y, heal_y], dtype="<f4"))).tolist()
                 packet = build_action_packet(seq, action_list)
                 conn.sendall(packet)
         except (ConnectionError, ValueError) as e:
