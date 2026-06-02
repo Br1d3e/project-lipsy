@@ -181,4 +181,12 @@ public class utils {
         }
         return NO_WALL_DISTANCE;
     }
+
+    public static class ItemSnapshot {
+        int hotbarHealthPotions = 0;
+        int food = 0;
+        int speedPotions = 0;
+        int healthPotions = 0;
+        int pearls = 0;
+    }
 }

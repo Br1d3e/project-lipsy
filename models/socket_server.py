@@ -16,11 +16,13 @@ STRAFE_DIR = os.path.join(BASE_DIR, "strafe")
 BLOCKHIT_DIR = os.path.join(BASE_DIR, "blockhit")
 HL_DIR = os.path.join(BASE_DIR, "hl_decision")
 HEAL_TRIGGER_DIR = os.path.join(HL_DIR, "heal_trigger")
+PEARL_TRIGGER_DIR = os.path.join(HL_DIR, "pearl_trigger")
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, AIM_DIR)
 sys.path.insert(0, STRAFE_DIR)
 sys.path.insert(0, BLOCKHIT_DIR)
 sys.path.insert(0, HEAL_TRIGGER_DIR)
+sys.path.insert(0, PEARL_TRIGGER_DIR)
 
 from aim.train_aim_model import Aim1dCNN, AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
 from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
@@ -34,6 +36,9 @@ from blockhit.train_blockhit_model import SEQ_LEN as BLOCKHIT_SEQ_LEN
 from hl_decision.heal_trigger.train_heal_trigger_model import MODEL_PATH as HEAL_TRIGGER_MODEL_PATH
 if not os.path.exists(HEAL_TRIGGER_MODEL_PATH):
     HEAL_TRIGGER_MODEL_PATH = os.path.join(HEAL_TRIGGER_DIR, "heal_trigger_xgb_5.json")
+from hl_decision.pearl_trigger.train_pearl_trigger_model import MODEL_PATH as PEARL_TRIGGER_MODEL_PATH
+if not os.path.exists(PEARL_TRIGGER_MODEL_PATH):
+    PEARL_TRIGGER_MODEL_PATH = os.path.join(PEARL_TRIGGER_DIR, "pearl_trigger_xgb_7.json")
 
 import xgboost as xgb
 
@@ -192,7 +197,8 @@ AIM_ACTION_SIZE = 2
 STRAFE_ACTION_SIZE = 1
 BLOCKHIT_ACTION_SIZE = 1
 HEAL_TRIGGER_ACTION_SIZE = 1
-ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE + BLOCKHIT_ACTION_SIZE + HEAL_TRIGGER_ACTION_SIZE
+PEARL_TRIGGER_ACTION_SIZE = 2
+ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE + BLOCKHIT_ACTION_SIZE + HEAL_TRIGGER_ACTION_SIZE + PEARL_TRIGGER_ACTION_SIZE
 STRAFE_OUTPUT_SIZE = 3
 BLOCKHIT_OUTPUT_SIZE = 2
 
@@ -390,7 +396,11 @@ def logits_to_blockhit_action(logits, p_threshold=0.8):
     probs = exp_logits / exp_logits.sum()
     return 1.0 if probs[1] > p_threshold else 0.0
 
-def probs_to_heal_trigger(probs, p_threshold=0.65):
+def probs_to_heal_trigger(probs, p_threshold=0.7):
+    probs = np.asarray(probs, dtype=np.float32).reshape(-1)
+    return 1.0 if probs[1] > p_threshold else 0.0
+
+def probs_to_pearl_trigger(probs, p_threshold=0.6):
     probs = np.asarray(probs, dtype=np.float32).reshape(-1)
     return 1.0 if probs[1] > p_threshold else 0.0
 
@@ -490,6 +500,8 @@ def run_server():
 
     heal_trigger_model = xgb.XGBClassifier()
     heal_trigger_model.load_model(HEAL_TRIGGER_MODEL_PATH)
+    pearl_trigger_model = xgb.XGBClassifier()
+    pearl_trigger_model.load_model(PEARL_TRIGGER_MODEL_PATH)
 
     print("Loaded models: aim_seq_len=%d strafe_seq_len=%d blockhit_seq_len=%d"
           % (aim_seq_len, strafe_seq_len, blockhit_seq_len))
@@ -549,11 +561,15 @@ def run_server():
                 heal_probs = heal_trigger_model.predict_proba(hl_decision_x.reshape(1, -1))[0]
                 heal_y = probs_to_heal_trigger(heal_probs)
 
-                # Keep legacy Java action layout:
-                # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse]
+                # Pearl trigger
+                pearl_probs = pearl_trigger_model.predict_proba(hl_decision_x.reshape(1, -1))[0]
+                pearl_prob = float(pearl_probs[1])
+                pearl_y = probs_to_pearl_trigger(pearl_probs, p_threshold=0.4)
+
+                # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse, healTrigger, pearlTrigger, pearlProb]
                 action_list = np.concatenate((
                     aim_y,
-                    np.asarray([strafe_y, strafe_confidence, blockhit_y, heal_y], dtype="<f4"))).tolist()
+                    np.asarray([strafe_y, strafe_confidence, blockhit_y, heal_y, pearl_y, pearl_prob], dtype="<f4"))).tolist()
                 packet = build_action_packet(seq, action_list)
                 conn.sendall(packet)
         except (ConnectionError, ValueError) as e:
