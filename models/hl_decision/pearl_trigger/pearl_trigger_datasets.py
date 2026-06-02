@@ -8,24 +8,39 @@ LOW_HP_THRESHOLD = 6
 class PearlTriggerDataset(HLDecisionDataset):
     label_name = "pearl"
 
-    def __init__(self, datasets=None, features=None, pearl_type="all"):
+    def __init__(
+            self,
+             datasets=None,
+             features=None,
+             pearl_type="all",
+            use_cache=False,
+            build_cache=True
+    ):
         self.pearl_type = pearl_type
-        super().__init__(datasets=datasets, features=features, label_name=self.label_name)
+        super().__init__(
+            datasets=datasets,
+            features=features,
+            label_name=self.label_name,
+            use_cache=use_cache,
+            build_cache=build_cache
+        )
 
     @staticmethod
     def hard_negative_mask(frames):
         return (
-            (
-                (frames["hpDiff"] <= -5) |
-                (frames["myHp"] >= HIGH_HP_THRESHOLD) |
-                (frames["targetEstimatedHp"] <= LOW_HP_THRESHOLD)
-            ) &
-            (frames["canPearl"] == True)
+                (frames["canPearl"] == True) &
+                (frames["targetExists"] == True) &
+                ~(
+                        (frames["aUseItem"] == True) &
+                        (frames["myHeldItem"] != "items.swordDiamond")
+                )
         )
 
     @staticmethod
     def easy_negative_mask(frames):
         return frames["canPearl"] == False
+                # (frames["myHp"] <= LOW_HP_THRESHOLD) | (frames["targetEstimatedHp"] >= HIGH_HP_THRESHOLD)
+        # )
 
     @staticmethod
     def pearl_label_type(pearl_type):
@@ -34,7 +49,7 @@ class PearlTriggerDataset(HLDecisionDataset):
         if pearl_type not in ("all", "offensive", "defensive"):
             raise ValueError(f"Invalid pearl type. Expected 'all', 'offensive', or 'defensive', got {pearl_type!r}")
         if pearl_type == "offensive":
-            return ["tryhard", "side", "agro"]
+            return ["tryhard", "side"]
         if pearl_type == "defensive":
             return "retreat"
         return ["tryhard", "side", "agro", "retreat"]
@@ -82,19 +97,23 @@ PearlTriggerDecisionDataset = PearlTriggerDataset
 
 
 if __name__ == "__main__":
-    dataset = PearlTriggerDataset()
+    dataset = PearlTriggerDataset(use_cache=True, build_cache=False)
     for pearl_type in ("offensive", "defensive"):
+        print()
+        print(pearl_type)
         print(f"[{pearl_type}] Train:")
-        train_X, train_Y = dataset.get_train_X_Y(positive_to_negative=0.333,
-                                                 prefer_hard_negative=True,
+        train_X, train_Y = dataset.get_train_X_Y(positive_to_negative=1/10,
+                                                 transition_context=1,
+                                                 prefer_hard_negative=False,
                                                  pearl_type=pearl_type)
         dataset.target_distribution(train_Y)
         print(f"[{pearl_type}] Val:")
-        val_X, val_Y = dataset.get_val_X_Y(positive_to_negative=0.25,
-                                           prefer_hard_negative=True,
+        val_X, val_Y = dataset.get_val_X_Y(positive_to_negative=1/15,
+                                           transition_context=1,
+                                           prefer_hard_negative=False,
                                            sample_mode="random",
                                            pearl_type=pearl_type)
         dataset.target_distribution(val_Y)
         print(f"[{pearl_type}] Test:")
-        test_X, test_Y = dataset.get_test_X_Y(pearl_type=pearl_type)
+        test_X, test_Y = dataset.get_test_X_Y(pearl_type=pearl_type, transition_context=1,)
         dataset.target_distribution(test_Y)

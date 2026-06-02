@@ -19,7 +19,7 @@ from models.hl_decision.heal_trigger.heal_trigger_datasets import HealTriggerDat
 from models.hl_decision.heal_trigger.train_heal_trigger_model import CONTEXT
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "heal_trigger_xgb_5.json")
+MODEL_PATH = os.path.join(BASE_DIR, "heal_trigger_xgb_6.json")
 
 
 def eval_xgb():
@@ -54,7 +54,6 @@ def eval_xgb():
     xgb.plot_importance(model.get_booster(), importance_type='gain', max_num_features=30)
 
     fig = plt.gcf()
-    fig.set_size_inches(150, 100)
     plt.show()
 
     x_eval_df = pd.DataFrame(x_test, columns=FEATURES)

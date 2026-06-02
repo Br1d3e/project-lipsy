@@ -5,8 +5,6 @@ import pickle
 
 from models.datasets import Datasets
 from models.datasets import TRAIN_FOLDER
-# TRAIN_FOLDER = os.path.join(TRAIN_FOLDER, "session_1778405079341")
-TRAIN_FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/test/recordings/test_hl_classfier"
 
 FEATURES = [
     # self
