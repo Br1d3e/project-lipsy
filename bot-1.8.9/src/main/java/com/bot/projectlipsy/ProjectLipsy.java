@@ -10,6 +10,7 @@ import net.minecraft.client.Minecraft;
 import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.sql.Ref;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Locale;
@@ -27,6 +28,7 @@ public class ProjectLipsy {
     private Healing healing;
     private utils utils;
     private Pearl pearl;
+    private Refill refill;
     private ModelConnect models;
     private Blockhit blockhit;
     private Retreat retreat;
@@ -38,7 +40,8 @@ public class ProjectLipsy {
         HEAL,
         SPEED,
         EAT,
-        PEARL
+        PEARL,
+        REFILL,
     }
 
     private Status status = Status.ATTACK;
@@ -59,6 +62,7 @@ public class ProjectLipsy {
         pearl = new Pearl(mc);
         models = new ModelConnect(mc);
         blockhit = new Blockhit(mc, Blockhit.Mode.PREDICTION);
+        refill = new Refill(mc);
         // Register this class to receive tick events
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
@@ -135,6 +139,9 @@ public class ProjectLipsy {
                 pearlCooldownTicksRemaining = 16 * 20;
                 pearl.updatePearl(target);
                 break;
+
+            case REFILL:
+                refill.refillPotions(6 - refill.hotbarPotions());
 
             default:
                 break;

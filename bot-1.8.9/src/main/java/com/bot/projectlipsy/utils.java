@@ -82,35 +82,6 @@ public class utils {
         }
     }
 
-    public void refillPotions(int amount) {
-        int potionsRefilled = 0;
-        String potionName = "Splash Potion of Healing";
-
-        if (amount <= 0) {
-            return;
-        }
-
-        // Find empty hotbar slots and fill them
-        for (int j = 0; j < 9; j++) { // Iterate through hotbar
-            if (mc.thePlayer.inventory.getStackInSlot(j) == null) {
-                // This hotbar slot is empty, let's find a potion for it
-                for (int i = 9; i < 36; i++) { // Iterate through inventory
-                    if (mc.thePlayer.inventory.getStackInSlot(i) != null && mc.thePlayer.inventory.getStackInSlot(i).getDisplayName().contains(potionName)) {
-                        // Move potion
-                        mc.playerController.windowClick(mc.thePlayer.inventoryContainer.windowId, i, j, 2, mc.thePlayer);
-                        potionsRefilled++;
-                        
-                        if (potionsRefilled >= amount) {
-                            return; // Refilled requested amount
-                        }
-                        // Potion moved, so break from inner loop to fill next empty hotbar slot
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
     public float getTargetYaw(EntityPlayer target) {
         double dx = target.posX - mc.thePlayer.posX;
         double dz = target.posZ - mc.thePlayer.posZ;
