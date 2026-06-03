@@ -22,9 +22,11 @@ public class ProjectLipsy {
     private Healing healing;
     private utils utils;
     private Pearl pearl;
+    private Refill refill;
     private ModelConnect models;
     private Blockhit blockhit;
     private Retreat retreat;
+    private float[] actions;
 
     private enum Status{
         ATTACK,
@@ -32,11 +34,14 @@ public class ProjectLipsy {
         HEAL,
         SPEED,
         EAT,
-        PEARL
+        PEARL,
+        REFILL,
     }
 
     private Status status = Status.ATTACK;
     private Status prevStatus = Status.ATTACK;
+
+    private int pearlCooldownTicksRemaining = 0;
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) throws Exception {
@@ -51,6 +56,7 @@ public class ProjectLipsy {
         pearl = new Pearl(mc);
         models = new ModelConnect(mc);
         blockhit = new Blockhit(mc, Blockhit.Mode.PREDICTION);
+        refill = new Refill(mc);
         // Register this class to receive tick events
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
@@ -70,7 +76,14 @@ public class ProjectLipsy {
             return;
         }
 
+        models.sendObs(target);
+        actions = models.getActions();
+
         utils.updateCombos(target);
+
+        if (prevStatus != status) {
+            mc.thePlayer.sendChatMessage("[Project L1psy] Status: " + status);
+        }
 
         prevStatus = status;
         statusController(target);
@@ -84,10 +97,10 @@ public class ProjectLipsy {
             blockhit.cancel("status " + status);
         }
 
+        pearlCooldownTicksRemaining = Math.max(pearlCooldownTicksRemaining - 1, 0);
+
         switch (status) {
             case ATTACK:
-                models.sendObs(target);
-                float[] actions = models.getActions();
                 movement.update(target, actions);
                 aiming.update(target, actions);
                 clicking.update(target);
@@ -105,7 +118,6 @@ public class ProjectLipsy {
                     break;
                 }
                 healing.updatePotMacro(target);
-//                movement.sprint(); // Always retreat while healing
                 break;
 
             case SPEED:
@@ -120,11 +132,13 @@ public class ProjectLipsy {
                 pearl.tryhardPearl(target);
                 break;
 
+            case REFILL:
+                refill.refillPotions(6 - refill.hotbarPotions());
+
             default:
                 break;
 
         }
-
     }
 
     private void statusController(EntityPlayer target) {
