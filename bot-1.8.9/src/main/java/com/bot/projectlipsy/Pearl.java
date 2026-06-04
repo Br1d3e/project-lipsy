@@ -264,7 +264,7 @@ public class Pearl {
         }
 
         if (myCombo >= 3) {
-            sideScore += 0.25D + Math.min(myCombo, 8) * 0.05D;
+            sideScore += 0.40D + Math.min(myCombo, 8) * 0.05D;
         }
         if (targetCombo >= 2) {
             sideScore += 0.30D + Math.min(targetCombo, 8) * 0.05D;

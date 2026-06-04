@@ -7,7 +7,7 @@ HIGH_COMBO_THRESHOLD = 4
 
 
 class RetreatTriggerDataset(HLDecisionDataset):
-    label_name = "retreat"
+    label_name = "refill"
 
     def __init__(self, datasets=None, features=None):
         super().__init__(datasets=datasets, features=features, label_name=self.label_name)

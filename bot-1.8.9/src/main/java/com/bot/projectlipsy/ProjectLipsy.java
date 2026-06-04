@@ -7,11 +7,6 @@ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import net.minecraft.client.Minecraft;
 
-import java.io.BufferedWriter;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.sql.Ref;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Locale;
 
@@ -47,7 +42,7 @@ public class ProjectLipsy {
     private Status status = Status.ATTACK;
     private Status prevStatus = Status.ATTACK;
 
-    private int pearlCooldownTicksRemaining = 0;
+    private int refillAmount;
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) throws Exception {
@@ -63,6 +58,7 @@ public class ProjectLipsy {
         models = new ModelConnect(mc);
         blockhit = new Blockhit(mc, Blockhit.Mode.PREDICTION);
         refill = new Refill(mc);
+        refillAmount = 0;
         // Register this class to receive tick events
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
@@ -74,7 +70,6 @@ public class ProjectLipsy {
             if (healing != null) healing.stopUtilityUse();
             return;
         }
-
 
         EntityPlayer target = findClosestPlayer();
         if (target == null) {
@@ -104,7 +99,9 @@ public class ProjectLipsy {
             blockhit.cancel("status " + status);
         }
 
-        pearlCooldownTicksRemaining = Math.max(pearlCooldownTicksRemaining - 1, 0);
+        if (status != Status.REFILL) {
+            refill.resetGuiScreen();
+        }
 
         switch (status) {
             case ATTACK:
@@ -128,20 +125,41 @@ public class ProjectLipsy {
                 break;
 
             case SPEED:
+                if (!refill.refillSpeed()) {
+                    break;
+                }
                 healing.speed();
                 break;
 
             case EAT:
+                if (!refill.refillFood()) {
+                    break;
+                }
                 healing.eat();
                 break;
 
             case PEARL:
-                pearlCooldownTicksRemaining = 16 * 20;
                 pearl.updatePearl(target);
                 break;
 
             case REFILL:
-                refill.refillPotions(6 - refill.hotbarPotions());
+                if (!refill.isRefilling() && (!refill.hasInventoryPotion() || refill.getRefillAmount() <= 0)) {
+                    status = Status.ATTACK;
+                    break;
+                }
+
+                double distance = mc.thePlayer.getDistanceToEntity(target);
+                double myHp = mc.thePlayer.getHealth();
+                boolean safe = distance >= 2.5D && myHp >= 6;
+
+                if (!safe) {
+                    retreat.back(target);
+                }
+                refillAmount = refill.getRefillAmount();
+                if (refill.refillPotions(refillAmount)) {
+                    status = Status.ATTACK;
+                }
+                break;
 
             default:
                 break;
@@ -159,11 +177,15 @@ public class ProjectLipsy {
             status = Status.PEARL;
             return;
         }
+        if (refill.isRefilling()) {
+            status = Status.REFILL;
+            return;
+        }
 
         // heal prediction from actions vector
         boolean actionsAvailable = actions != null && actions.length >= 6;
         boolean predPot = actionsAvailable && actions[5] == 1.0F;
-        boolean canHeal = healing.canPot() && utils.hasItem("Splash Potion of Healing");
+        boolean canHeal = healing.canPot() && refill.hasPotion() && refill.hotbarPotions() > 0;
         boolean shouldHeal = mc.thePlayer.getHealth() <= 14;
         boolean ruleShouldHeal = mc.thePlayer.getHealth() <= 12;
         boolean mustHeal = mc.thePlayer.getHealth() <= 4;
@@ -237,12 +259,12 @@ public class ProjectLipsy {
                             pearlProb
                     ));
                     return;
-                } else {
-                    mc.thePlayer.sendChatMessage(String.format(
-                            Locale.US,
-                            "[Project L1psy] Pearl rejected prob=%.2f",
-                            pearlProb
-                    ));
+//                } else {
+//                    mc.thePlayer.sendChatMessage(String.format(
+//                            Locale.US,
+//                            "[Project L1psy] Pearl rejected prob=%.2f",
+//                            pearlProb
+//                    ));
                 }
             }
         }
@@ -263,12 +285,18 @@ public class ProjectLipsy {
             }
         }
 
+        refillAmount = refill.getRefillAmount();
+        if (refillAmount > 0) {
+            status = Status.REFILL;
+            return;
+        }
+
         // If close or buffs are not needed, attack
         status = Status.ATTACK;
     }
 
     private EntityPlayer findClosestPlayer() {
-//        if (mc.theWorld == null) return null;
+        if (mc.theWorld == null || mc.thePlayer == null) return null;
         return mc.theWorld.playerEntities.stream()
                 .filter(p -> p != mc.thePlayer)
                 .min(Comparator.comparingDouble(mc.thePlayer::getDistanceToEntity))

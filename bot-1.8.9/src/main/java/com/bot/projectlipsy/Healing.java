@@ -212,7 +212,7 @@ public class Healing {
         } else if (potTicks == 5) {
             potState = HealingState.POTTING;
             mc.thePlayer.rotationPitch = 25F;
-            utils.switchItem("Splash Potion of Healing");
+            utils.switchHotbarItem("Splash Potion of Healing");
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
             waitingForCurrentPotExplosion = true;
@@ -249,7 +249,7 @@ public class Healing {
             mc.thePlayer.rotationYaw = retreatYaw;
             mc.thePlayer.rotationPitch = mc.thePlayer.onGround ? 25F : 30F;
         } else if (potTicks == 6) {
-            utils.switchItem("Splash Potion of Healing");
+            utils.switchHotbarItem("Splash Potion of Healing");
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
             potState = HealingState.POTTING;
@@ -287,7 +287,7 @@ public class Healing {
             movement.sprint();
             mc.thePlayer.rotationPitch = 45F;
         } else if (potTicks == 6) {
-            utils.switchItem("Splash Potion of Healing");
+            utils.switchHotbarItem("Splash Potion of Healing");
             movement.sprint();
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
@@ -325,12 +325,27 @@ public class Healing {
     }
 
     public boolean canEat() {
-        return this.mc.thePlayer.getFoodStats().getFoodLevel() < 20 && (utils.hasItem("Golden Carrot") || utils.hasItem("Steak"));
+        return mc.thePlayer.getFoodStats().getFoodLevel() < 20 &&
+                (utils.hasItem("Golden Carrot") || utils.hasItem("Steak"));
     }
 
     public boolean canSpeed() {
-        return (!this.mc.thePlayer.isPotionActive(Potion.moveSpeed) || this.mc.thePlayer.getActivePotionEffect
-                (Potion.moveSpeed).getDuration() < 20 * 20) && utils.hasItem("Potion of Swiftness");     // 20s
+        return (
+                !mc.thePlayer.isPotionActive(Potion.moveSpeed) || mc.thePlayer.getActivePotionEffect
+                (Potion.moveSpeed).getDuration() < 20 * 20) &&
+                utils.hasItem("Potion of Swiftness"
+        );     // 20s
+    }
+
+    public boolean speedActive() {
+        return (
+                mc.thePlayer.isPotionActive(Potion.moveSpeed) ||
+                        mc.thePlayer.getActivePotionEffect(Potion.moveSpeed).getDuration() >= 80 * 20
+        );
+    }
+
+    public boolean foodActive() {
+        return mc.thePlayer.getFoodStats().getFoodLevel() == 20;
     }
 
     public void speed() {
@@ -345,7 +360,7 @@ public class Healing {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
         speedTicks++;
 
-        if (speedTicks > MAX_UTILITY_USE_TICKS) {
+        if (speedActive() || !utils.isSpeedPotion(mc.thePlayer.getHeldItem())) {
             stopUtilityUse();
         }
     }
@@ -367,7 +382,7 @@ public class Healing {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
         eatTicks++;
 
-        if (eatTicks > MAX_UTILITY_USE_TICKS) {
+        if (foodActive() || !utils.isFood(mc.thePlayer.getHeldItem())) {
             stopUtilityUse();
         }
     }

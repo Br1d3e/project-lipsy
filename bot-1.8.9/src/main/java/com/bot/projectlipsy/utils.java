@@ -46,25 +46,40 @@ public class utils {
     }
 
     public boolean hasItem(String displayName) {
+        if (mc.thePlayer == null || displayName == null) return false;
         for (int i = 0; i < 36; i++) {
-            if (mc.thePlayer.inventory.getStackInSlot(i) != null && mc.thePlayer.inventory.getStackInSlot(i).getDisplayName().contains(displayName)) {
+            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
+            if (stack != null && stack.getDisplayName() != null && stack.getDisplayName().contains(displayName)) {
                 return true;
             }
         }
         return false;
     }
 
-    public void switchItem(String displayName) {
-        if (!hasItem(displayName)) return;
+    public void switchHotbarItem(String displayName) {
+        if (mc.thePlayer == null || !hasItem(displayName)) return;
         for (int i = 0; i < 9; i++) {
-            if (mc.thePlayer.inventory.getStackInSlot(i) != null && mc.thePlayer.inventory.getStackInSlot(i).getDisplayName().contains(displayName)) {
+            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
+            if (stack != null && stack.getDisplayName() != null && stack.getDisplayName().contains(displayName)) {
+                mc.thePlayer.inventory.currentItem = i;
+                return;
+            }
+        }
+    }
+
+    public void switchItem(String displayName) {
+        if (mc.thePlayer == null || !hasItem(displayName)) return;
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
+            if (stack != null && stack.getDisplayName() != null && stack.getDisplayName().contains(displayName)) {
                 mc.thePlayer.inventory.currentItem = i;
                 return;
             }
         }
 
         for (int i = 9; i < 36; i++) {
-            if (mc.thePlayer.inventory.getStackInSlot(i) != null && mc.thePlayer.inventory.getStackInSlot(i).getDisplayName().contains(displayName)) {
+            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
+            if (stack != null && stack.getDisplayName() != null && stack.getDisplayName().contains(displayName)) {
                 int emptySlot = -1;
                 for (int j = 0; j < 9; j++) {
                     if (mc.thePlayer.inventory.getStackInSlot(j) == null) {
