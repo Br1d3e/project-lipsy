@@ -4,19 +4,19 @@ import pickle
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-from models.window_dataset import WindowDataset
+from models.torch_dataset import TorchDataset
 from models.aim.aim_datasets import AimDataset
 
 import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 
 
-SEQ_LEN = 15
+SEQ_LEN = 20
 BATCH_SIZE = 128
 EPOCHS = 100
 LEARNING_RATE = 1e-3
@@ -27,7 +27,6 @@ PITCH_WEIGHT = 1
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 models_dir = os.path.join(BASE_DIR, "models/aim")
-
 
 
 class AimLSTM(nn.Module):
@@ -146,6 +145,8 @@ def weighted_aim_loss(pred, target, criterion):
     return (YAW_WEIGHT * yaw_loss + PITCH_WEIGHT * pitch_loss)
 
 def get_X_Y(dataset):
+    if hasattr(dataset, "X") and hasattr(dataset, "Y"):
+        return dataset.X, dataset.Y
     X = []
     Y = []
     for i in range(len(dataset)):
@@ -324,22 +325,23 @@ def eval_model(model, dataloader, graph=False, diagnostics=False):
 
 
 if __name__ == "__main__":
-    aim_dataset = AimDataset()
-    train_windows = aim_dataset.get_train_windows(seq_len=SEQ_LEN)
-    train_dataset = WindowDataset(train_windows)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    aim_dataset = AimDataset(use_cache=True, build_cache=False)
+    train_x, train_y = aim_dataset.get_train_X_Y(seq_len=SEQ_LEN)
+    train_dataset = TorchDataset(train_x, train_y)
     if len(train_dataset) == 0:
-        raise ValueError("No training windows found.")
+        raise ValueError("No training data found.")
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
     print_target_clamp_suggestions(train_dataset)
 
-    val_windows = aim_dataset.get_val_windows(seq_len=SEQ_LEN)
-    val_dataset = WindowDataset(val_windows)
+    val_x, val_y = aim_dataset.get_val_X_Y(seq_len=SEQ_LEN)
+    val_dataset = TorchDataset(val_x, val_y)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
-    model_name = "1dCNN 10"
+    model_name = "1dCNN 12"
     architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> 512 -> avg pool 1 -> linear 256 -> linear 128 -> linear 64 -> 2"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
@@ -348,7 +350,7 @@ if __name__ == "__main__":
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
     model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2, conv_channels=[32, 64, 128, 256, 512], linear_channels=[256, 128, 64])
 
-    model_path = os.path.join(BASE_DIR, "aim_cnn_10.pth")
+    model_path = os.path.join(BASE_DIR, "aim_cnn_12.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

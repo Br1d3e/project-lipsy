@@ -1,34 +1,37 @@
 from models.hl_decision.hl_decision_datasets import DEFAULT_TRANSITION_CONTEXT, HLDecisionDataset
 
 
-HIGH_HP_THRESHOLD = 14
-LOW_HP_THRESHOLD = 8
-HIGH_COMBO_THRESHOLD = 4
+FULL_HOTBAR_POTS = 6
 
 
-class RetreatTriggerDataset(HLDecisionDataset):
+class RefillTriggerDataset(HLDecisionDataset):
     label_name = "refill"
 
-    def __init__(self, datasets=None, features=None):
-        super().__init__(datasets=datasets, features=features, label_name=self.label_name)
+    def __init__(self, datasets=None, features=None, use_cache=False, build_cache = True):
+        super().__init__(datasets=datasets, features=features, label_name=self.label_name, use_cache=use_cache, build_cache=build_cache)
 
     @staticmethod
     def hard_negative_mask(frames):
         return (
-            (
-                (frames["myHp"] <= LOW_HP_THRESHOLD) |
-                (frames["targetCombo"] >= HIGH_COMBO_THRESHOLD) |
-                (frames["ticksSinceLastDamageTaken"] <= 10)
-            ) &
-            (frames["targetDistance"] <= 4.5)
+            (frames["hotbarHealthPotions"] < FULL_HOTBAR_POTS) &
+            (frames["targetExists"] == True) &
+            (frames["inInventory"] == False)
+            # (
+            #     (frames["myHp"] <= LOW_HP_THRESHOLD) |
+            #     (frames["targetCombo"] >= HIGH_COMBO_THRESHOLD) |
+            #     (frames["ticksSinceLastDamageTaken"] <= 10)
+            # ) &
+            # (frames["targetDistance"] <= 4.5)
         )
 
     @staticmethod
     def easy_negative_mask(frames):
         return (
-            (frames["myHp"] > HIGH_HP_THRESHOLD) &
-            (frames["targetCombo"] <= 1) &
-            (frames["targetDistance"] <= 5.0)
+            (frames["hotbarHealthPotions"] >= FULL_HOTBAR_POTS) |
+            (frames["inInventory"] == True)
+            # (frames["myHp"] > HIGH_HP_THRESHOLD) &
+            # (frames["targetCombo"] <= 1) &
+            # (frames["targetDistance"] <= 5.0)
         )
 
     def get_train_X_Y(self, seq_len=1, transition_context=DEFAULT_TRANSITION_CONTEXT, positive_to_negative=0.5,
@@ -68,13 +71,13 @@ class RetreatTriggerDataset(HLDecisionDataset):
 
 
 if __name__ == "__main__":
-    dataset = RetreatTriggerDataset()
+    dataset = RefillTriggerDataset(use_cache=True, build_cache=False)
     print("Train:")
-    train_X, train_Y = dataset.get_train_X_Y(transition_context=1, prefer_hard_negative=True)
+    train_X, train_Y = dataset.get_train_X_Y(transition_context=20, prefer_hard_negative=False, sample_mode="even")
     dataset.target_distribution(train_Y)
     print("Val:")
-    val_X, val_Y = dataset.get_val_X_Y(transition_context=1, prefer_hard_negative=True)
+    val_X, val_Y = dataset.get_val_X_Y(transition_context=20, prefer_hard_negative=False, sample_mode="random")
     dataset.target_distribution(val_Y)
     print("Test:")
-    test_X, test_Y = dataset.get_test_X_Y(transition_context=1)
+    test_X, test_Y = dataset.get_test_X_Y(transition_context=20)
     dataset.target_distribution(test_Y)

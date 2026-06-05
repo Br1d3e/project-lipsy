@@ -4,7 +4,7 @@ import pickle
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-from models.window_dataset import WindowDataset
+from models.torch_dataset import TorchDataset
 from models.strafe.strafe_datasets import StrafeDataset
 
 import numpy as np
@@ -92,6 +92,8 @@ def save_model_checkpoint(model, save_path, checkpoint_meta=None):
 
 
 def get_X_Y(dataset):
+    if hasattr(dataset, "X") and hasattr(dataset, "Y"):
+        return dataset.X, dataset.Y
     X = []
     Y = []
     for i in range(len(dataset)):
@@ -226,15 +228,15 @@ def eval_model(model, dataloader, graph=False, diagnostics=False):
 
 
 if __name__ == "__main__":
-    strafe_dataset = StrafeDataset()
-    train_windows = strafe_dataset.get_train_windows(seq_len=SEQ_LEN)
-    train_dataset = WindowDataset(train_windows)
+    strafe_dataset = StrafeDataset(use_cache=True, build_cache=False)
+    train_X, train_Y = strafe_dataset.get_train_X_Y(seq_len=SEQ_LEN)
+    train_dataset = TorchDataset(train_X, train_Y)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     if len(train_dataset) == 0:
-        raise ValueError("No training windows found.")
+        raise ValueError("No training samples found.")
 
-    val_windows = strafe_dataset.get_val_windows(seq_len=SEQ_LEN)
-    val_dataset = WindowDataset(val_windows)
+    val_X, val_Y = strafe_dataset.get_val_X_Y(seq_len=SEQ_LEN)
+    val_dataset = TorchDataset(val_X, val_Y)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     sample_x = train_dataset[0][0]

@@ -14,24 +14,41 @@ ROUND_START_TRIM_TICKS = 20
 ROUND_END_TRIM_TICKS = 20
 
 class Datasets:
-    def __init__(self, folder, keep_frames=True):
+    def __init__(self, folder, keep_frames=True, use_cache=False, build_cache=True):
         self.folder = folder
         self.keep_frames = keep_frames
-        if "/" in folder and "session" not in folder:
-            self.frames = []
-            self.labels = []
-            self.rounds = []
-            for session_frame, session_label in self.iter_folders(folder):
-                if self.keep_frames:
-                    self.frames.append(session_frame)
-                self.labels.append(session_label)
-                self.rounds.extend(self.split_rounds(session_frame, session_label))
+        self.cache_dir = os.path.join(TRAIN_FOLDER, ".cache")
+
+        if use_cache:
+            self.frames, self.labels, self.rounds = None, None, None
+            self.train_rounds, self.val_rounds, self.test_rounds = None, None, None     # deprecate rounds list
+            self.train_frames = self.load_pickle_cache("train")
+            self.val_frames = self.load_pickle_cache("val")
+            self.test_frames = self.load_pickle_cache("test")
         else:
-            self.frames, self.labels = self.load_folder(folder)     # session frame / labels
-            self.rounds = self.split_rounds(self.frames, self.labels)
-            if not self.keep_frames:
-                self.frames = None
-        self.train_data, self.val_data, self.test_data = self.split_train_val_test(self.rounds)
+            if "/" in folder and "session" not in folder:
+                self.frames = []
+                self.labels = []
+                self.rounds = []
+                for session_frame, session_label in self.iter_folders(folder):
+                    if self.keep_frames:
+                        self.frames.append(session_frame)
+                    self.labels.append(session_label)
+                    self.rounds.extend(self.split_rounds(session_frame, session_label))
+            else:
+                self.frames, self.labels = self.load_folder(folder)     # session frame / labels
+                self.rounds = self.split_rounds(self.frames, self.labels)
+                if not self.keep_frames:
+                    self.frames = None
+            self.train_rounds, self.val_rounds, self.test_rounds = self.split_train_val_test(self.rounds)
+            self.train_frames = self.concatenate_frames(self.train_rounds)
+            self.val_frames = self.concatenate_frames(self.val_rounds)
+            self.test_frames = self.concatenate_frames(self.test_rounds)
+
+        if build_cache:
+            self.save_pickle_cache(self.train_frames, "train")
+            self.save_pickle_cache(self.val_frames, "val")
+            self.save_pickle_cache(self.test_frames, "test")
 
     def _read_jsonl(self, path):
         if not path:
@@ -41,6 +58,19 @@ class Datasets:
                 return pd.read_json(path, lines=True, compression="gzip")
             return pd.read_json(f, lines=True)
 
+    def cache_name(self, name):
+        return f"ds_v2_{name}.pickle"
+
+    def load_pickle_cache(self, name):
+        path = os.path.join(self.cache_dir, self.cache_name(name))
+        if os.path.exists(path):
+            return pd.read_pickle(path)
+        raise FileNotFoundError(f"Cache {self.cache_name(name)} not found.")
+
+    def save_pickle_cache(self, frames, name):
+        os.makedirs(self.cache_dir, exist_ok=True)
+        path = os.path.join(self.cache_dir, self.cache_name(name))
+        frames.reset_index(drop=True).to_pickle(path)
 
     def load_folders(self, folder):
         frames = []
@@ -159,20 +189,209 @@ class Datasets:
 
         return train_rounds, val_rounds, test_rounds
 
-    def get_datasets(self):
-        return self.train_data, self.val_data, self.test_data
+    def _col_labels(self, frames: pd.DataFrame, labels) -> pd.DataFrame:
+        frames = frames.iloc[np.argsort(frames["recordingTickIndex"].to_numpy())].copy()
+        frames["label"] = None
+        frames["label_type"] = None
+        frames["label_start"] = -1
 
-    def get_train_data(self):
-        return self.train_data
-    def get_val_data(self):
-        return self.val_data
-    def get_test_data(self):
-        return self.test_data
+        frames_ticks = frames["recordingTickIndex"].to_numpy()
+        frames_start = frames_ticks.min()
+        frames_end = frames_ticks.max()
+
+        for label in labels:
+            label_name = self.label_name(label).strip().lower()
+            label_start = label["start_tick"]
+            label_end = label["end_tick"]
+
+            overlap_start = max(frames_start, label_start)
+            overlap_end = min(frames_end, label_end)
+            if overlap_start >= overlap_end:
+                continue
+
+            if label_name in ["attack", "heal", "pearl", "refill", "speed", "eat"]:
+                row_idx = np.zeros(len(frames), dtype=bool)
+                start_idx = np.searchsorted(frames_ticks, overlap_start, side="left")
+                end_idx = np.searchsorted(frames_ticks, overlap_end, side="right")
+                row_idx[start_idx:end_idx] = True
+
+                frames.loc[row_idx, f"s_{label_name}"] = 1
+
+                frames.loc[row_idx, "label"] = label_name
+                frames.loc[row_idx, "label_type"] = label["type"]
+                frames.loc[row_idx, "label_start"] = label["start_tick"]
+
+        return frames
+
+    def concatenate_frames(self, rounds):
+        parts = []
+        for i, round_df in enumerate(rounds):
+            round_df = round_df.set_index("recordingTickIndex", drop=False)
+            round_df["round_id"] = i
+            round_df = self._col_labels(round_df, self.labels_for_round(round_df))
+            round_df = round_df.set_index(["round_id", "recordingTickIndex"], drop=False)
+
+            parts.append(round_df)
+
+        if not parts:
+            return pd.DataFrame()
+        return pd.concat(parts, axis=0, copy=False)
+
+    def get_datasets_rounds(self):
+        return self.train_rounds, self.val_rounds, self.test_rounds
+
+    def get_train_rounds(self):
+        if self.train_rounds is None:
+            raise ValueError("train_rounds is not available when using cached frames.")
+        return self.train_rounds
+    def get_val_rounds(self):
+        if self.val_rounds is None:
+            raise ValueError("val_rounds is not available when using cached frames.")
+        return self.val_rounds
+    def get_test_rounds(self):
+        if self.test_rounds is None:
+            raise ValueError("test_rounds is not available when using cached frames.")
+        return self.test_rounds
+
+    def get_train_frames(self):
+        return self.train_frames
+    def get_val_frames(self):
+        return self.val_frames
+    def get_test_frames(self):
+        return self.test_frames
 
     def get_labels(self):
         return self.labels
 
-    def make_windows(self, rounds, features, targets, seq_len=1, stride=1, label_filter: str=None):
+    def select_X_Y(
+            self,
+            frames: pd.DataFrame,
+            features=None,
+            targets=None,
+            seq_len=1,
+            candidate_mask_fn=None,
+            filter_mode="last",
+    ):
+        if filter_mode not in ["last", "all", None]:
+            raise ValueError(f"filter_mode must be last, all, or None, got {filter_mode!r}")
+
+        if frames.empty:
+            feature_dim = len(features) if features is not None else 0
+            target_dim = len(targets) if targets is not None else 0
+            return np.empty((0, seq_len, feature_dim), dtype=np.float32), np.empty((0, target_dim), dtype=np.float32)
+        if seq_len < 1:
+            raise ValueError(f"seq_len must be >= 1, got {seq_len}")
+
+        features_df = frames[features] if features is not None else frames
+        feature_matrix = features_df.to_numpy(np.float32)
+
+        targets_df = frames[targets] if targets is not None else frames
+        targets_value = targets_df.to_numpy(np.float32)
+
+        if callable(candidate_mask_fn):
+            candidate_mask = np.asarray(candidate_mask_fn(frames), dtype=bool)
+        elif candidate_mask_fn is None:
+            candidate_mask = np.ones(len(frames), dtype=bool)
+        else:
+            candidate_mask = np.asarray(candidate_mask_fn, dtype=bool)
+        if candidate_mask.shape[0] != len(frames):
+            raise ValueError(f"Invalid candidate mask shape. Expected {len(frames)}, got {candidate_mask.shape[0]}")
+
+        X = []
+        Y = []
+
+        if "round_id" in frames.columns:
+            round_groups = frames.groupby(frames["round_id"], sort=False)
+        else:
+            round_groups = [(None, frames)]
+
+        for _, round_df in round_groups:
+            round_idx = frames.index.get_indexer(round_df.index)
+            if len(round_idx) < seq_len:
+                continue
+
+            round_candidate_mask = candidate_mask[round_idx]
+            for end in range(seq_len - 1, len(round_idx)):
+                start = end - seq_len + 1
+                target_pos = end + 1
+
+                if target_pos >= len(round_idx):
+                    continue
+
+                if filter_mode == "last":
+                    keep = round_candidate_mask[target_pos]
+                elif filter_mode == "all":
+                    keep = round_candidate_mask[start:target_pos + 1].all()
+                else:
+                    keep = True
+                if not keep:
+                    continue
+
+                frame_idx = round_idx[start:end + 1]
+                target_idx = round_idx[target_pos]
+                x = feature_matrix[frame_idx]
+                y = targets_value[target_idx]
+                if not np.isfinite(x).all() or not np.isfinite(y).all():
+                    continue
+                X.append(x)
+                Y.append(y)
+
+        feature_dim = feature_matrix.shape[1]
+        target_dim = targets_value.shape[1]
+        if not X:
+            return np.empty((0, seq_len, feature_dim), dtype=np.float32), np.empty((0, target_dim), dtype=np.float32)
+
+        return np.asarray(X, dtype=np.float32), np.asarray(Y, dtype=np.float32)
+
+    @staticmethod
+    def label_active_mask(
+            frames: pd.DataFrame,
+            label_name=None,
+            label_type=None,
+    ):
+        if label_name not in ["attack", "heal", "pearl", "retreat", "refill", "speed", "eat"]:
+            raise ValueError(f"Invalid label filter. Expected ['attack', 'heal', 'pearl', 'retreat', 'refill', "
+                             f"'speed', 'eat'], got {label_name!r}")
+
+        if frames.empty or "round_id" not in frames.columns or "recordingTickIndex" not in frames.columns:
+            raise ValueError(f"Invalid frames columns. Expected 'round_id', 'recordingTickIndex'")
+
+        label_mask = np.zeros(len(frames), dtype=bool)
+        for round_id, round_df in frames.groupby(frames["round_id"], sort=False):
+            round_idx = frames.index.get_indexer(round_df.index)
+
+            round_mask = np.ones(len(round_df), dtype=bool)
+            if label_name is not None:
+                round_mask &= (round_df["label"] == label_name).to_numpy()
+            if label_type is not None:
+                if isinstance(label_type, (list, tuple, set)):
+                    round_mask &= round_df["label_type"].isin(label_type).to_numpy()
+                else:
+                    round_mask &= (round_df["label_type"] == label_type).to_numpy()
+
+            label_mask[round_idx] = round_mask
+
+        return label_mask
+
+    def select_X_Y_by_label(
+            self,
+            frames: pd.DataFrame,
+            features=None,
+            targets=None,
+            seq_len=1,
+            label_name=None,
+            label_type=None,
+            extra_candidate_mask_fn=None,
+            filter_mode="all",
+    ):
+        label_candidate_mask = self.label_active_mask(frames, label_name, label_type)
+        if callable(extra_candidate_mask_fn):
+            extra_candidate_mask = extra_candidate_mask_fn(frames)
+            return self.select_X_Y(frames, features, targets, seq_len, label_candidate_mask & extra_candidate_mask, filter_mode)
+        return self.select_X_Y(frames, features, targets, seq_len, label_candidate_mask, filter_mode)
+
+    def make_windows(self, rounds, features, targets, seq_len=1, stride=1, label_filter: str=None,
+                     candidate_mask_fn=None):
         data_windows = []
         columns = features + targets
         feature_count = len(features)
@@ -194,17 +413,24 @@ class Datasets:
                 if overlap_start >= overlap_end:
                     continue
 
-                available = round_df.loc[
+                available_mask = (
                     (overlap_start <= round_df["recordingTickIndex"]) &
                     (round_df["recordingTickIndex"] <= overlap_end) &
-                    (round_df["targetExists"] == True),
-                    columns
-                ].sort_index()
+                    (round_df["targetExists"] == True) &
+                    (round_df["myHeldItemType"] == "item.swordDiamond")
+                )
+                available = round_df.loc[available_mask, columns].sort_index()
 
                 if len(available) <= seq_len:
                     continue
 
-                values = available.to_numpy(dtype=np.float32, copy=True)
+                candidate_mask = np.ones(len(available), dtype=bool)
+                if callable(candidate_mask_fn):
+                    candidate_mask = np.asarray(candidate_mask_fn(available), dtype=bool)
+                if candidate_mask.shape[0] != len(available):
+                    raise ValueError(f"Invalid candidate mask shape. Expected {len(available)}, got {candidate_mask.shape[0]}")
+
+                values = available[candidate_mask].to_numpy(dtype=np.float32, copy=True)
                 values = values[np.isfinite(values).all(axis=1)]
                 if len(values) <= seq_len:
                     continue

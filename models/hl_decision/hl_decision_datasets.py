@@ -128,9 +128,9 @@ class HLDecisionDataset:
             self.val_frames = self.load_pickle_cache("val")
             self.test_frames = self.load_pickle_cache("test")
         else:
-            self.train_rounds = self.datasets.get_train_data()
-            self.val_rounds = self.datasets.get_val_data()
-            self.test_rounds = self.datasets.get_test_data()
+            self.train_rounds = self.datasets.get_train_rounds()
+            self.val_rounds = self.datasets.get_val_rounds()
+            self.test_rounds = self.datasets.get_test_rounds()
 
             self.train_frames = self.concatenate_frames(self.train_rounds)
             self.val_frames = self.concatenate_frames(self.val_rounds)

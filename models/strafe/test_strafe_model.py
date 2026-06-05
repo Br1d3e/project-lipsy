@@ -31,7 +31,7 @@ except ModuleNotFoundError:
         print_class_distribution,
         strafe_to_class, get_X_Y,
 )
-from models.window_dataset import WindowDataset
+from models.torch_dataset import TorchDataset
 from models.strafe.strafe_datasets import StrafeDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -127,7 +127,7 @@ def print_metrics(y_true, y_pred, mask=None, name="all"):
     acc = np.mean(y_true.reshape(-1) == y_target.reshape(-1))
 
     criterion = nn.CrossEntropyLoss()
-    loss = criterion(torch.tensor(y_pred), strafe_to_class(torch.tensor(y_target)))
+    loss = criterion(torch.tensor(y_pred), strafe_to_class(torch.tensor(y_true)))
 
     ppl = np.exp(loss)
 
@@ -150,9 +150,9 @@ def evaluate_model():
         print(f"Skipping: missing model file {model_path}")
         return
 
-    strafe_dataset = StrafeDataset()
-    test_windows = strafe_dataset.get_test_windows(seq_len=SEQ_LEN)
-    test_dataset = WindowDataset(test_windows)
+    strafe_dataset = StrafeDataset(use_cache=True, build_cache=False)
+    test_X, test_Y = strafe_dataset.get_test_X_Y(seq_len=SEQ_LEN)
+    test_dataset = TorchDataset(test_X, test_Y)
     loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     device = get_device()
@@ -223,8 +223,8 @@ def pred_confidence(y_pred):
     return probs.max(axis=1)
 
 def print_confusion_matrix(y_true_strafe, y_pred_strafe):
-    true_cls = (y_true_strafe + 1).astype(int)
-    pred_cls = (y_pred_strafe + 1).astype(int)
+    true_cls = (y_true_strafe.reshape(-1) + 1).astype(int)
+    pred_cls = (y_pred_strafe.reshape(-1) + 1).astype(int)
 
     cm = np.zeros((3, 3), dtype=int)
 
