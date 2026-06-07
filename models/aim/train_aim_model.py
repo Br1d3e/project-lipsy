@@ -17,7 +17,7 @@ from matplotlib import pyplot as plt
 
 
 SEQ_LEN = 20
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 EPOCHS = 100
 LEARNING_RATE = 1e-3
 LOSS_TYPE = "huber"
@@ -325,7 +325,7 @@ def eval_model(model, dataloader, graph=False, diagnostics=False):
 
 
 if __name__ == "__main__":
-    aim_dataset = AimDataset(use_cache=True, build_cache=False)
+    aim_dataset = AimDataset(feature_mode="RNN", use_cache=True, build_cache=False)
     train_x, train_y = aim_dataset.get_train_X_Y(seq_len=SEQ_LEN)
     train_dataset = TorchDataset(train_x, train_y)
     if len(train_dataset) == 0:
@@ -341,16 +341,17 @@ if __name__ == "__main__":
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
-    model_name = "1dCNN 12"
-    architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> 512 -> avg pool 1 -> linear 256 -> linear 128 -> linear 64 -> 2"
+    model_name = "LSTM 7"
+    # architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> 512 -> avg pool 1 -> linear 256 -> linear 128 -> linear 64 -> 2"
+    architecture = f"{input_dim} -> {feature_dim}"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
     # model = AimSimpleMLP(input_dim=sample_x.numel())
     # model = AimStackedMLP(input_dim=input_dim, output_dim=2)
-    # model = AimLSTM(input_dim=sample_x.shape[-1], output_dim=2)
+    model = AimLSTM(input_dim=sample_x.shape[-1], output_dim=2)
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
-    model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2, conv_channels=[32, 64, 128, 256, 512], linear_channels=[256, 128, 64])
+    # model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2, conv_channels=[32, 64, 128, 256, 512], linear_channels=[256, 128, 64])
 
-    model_path = os.path.join(BASE_DIR, "aim_cnn_12.pth")
+    model_path = os.path.join(BASE_DIR, "aim_lstm_7.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,

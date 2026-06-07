@@ -305,7 +305,7 @@ def load_model(path: str, input_dim: int, output_dim: int, default_model_class_n
     return loaded
 
 AIM_MODEL_CONFIG = {
-    "MODEL_PATH": os.path.join(AIM_DIR, "aim_cnn_6.pth"),
+    "MODEL_PATH": os.path.join(AIM_DIR, "aim_lstm_6.pth"),
     "INPUT_DIM" : AIM_FEATURE_SIZE * AIM_SEQ_LEN,
     "OUTPUT_DIM": AIM_ACTION_SIZE
 }

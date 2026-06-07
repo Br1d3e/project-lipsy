@@ -8,8 +8,7 @@ FEATURES = ["myMotionX", "myMotionY", "myMotionZ", "myYaw", "myPitch",
 
 FEATURES_HISTORY = ["myMotionX", "myMotionY", "myMotionZ", "myYaw", "myPitch", "myDeltaYaw", "myDeltaPitch",
             "myMoveForward", "myMoveStrafing", 'targetRelX', 'targetRelY', 'targetRelZ', 'targetDistance',
-            'targetMotionX', 'targetMotionY', 'targetMotionZ', 'targetYaw', 'targetPitch', 'targetDeltaYaw',
-            'targetDeltaPitch', 'yawDiffToTarget', 'pitchDiffToTarget']
+            'targetMotionX', 'targetMotionY', 'targetMotionZ', 'yawDiffToTarget', 'pitchDiffToTarget']
 
 TARGETS = ["myDeltaYaw", "myDeltaPitch"]
 

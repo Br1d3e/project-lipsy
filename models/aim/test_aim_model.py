@@ -34,7 +34,7 @@ from models.torch_dataset import TorchDataset
 from models.aim.aim_datasets import AimDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "aim_cnn_12.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "aim_lstm_7.pth")
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
@@ -186,7 +186,7 @@ def evaluate_axis(axis):
         print(f"Skipping {axis}: missing model file {model_path}")
         return
 
-    aim_dataset = AimDataset(use_cache=True, build_cache=False)
+    aim_dataset = AimDataset(feature_mode="RNN", use_cache=True, build_cache=False)
     test_X, test_Y = aim_dataset.get_test_X_Y(seq_len=SEQ_LEN)
     test_dataset = TorchDataset(test_X, test_Y)
     loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
