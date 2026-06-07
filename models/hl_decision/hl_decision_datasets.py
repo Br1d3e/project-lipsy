@@ -233,7 +233,7 @@ class HLDecisionDataset:
             feature_mask_fn=None,
             target=None,
             target_mask_fn=None,
-        default_features=None
+            default_features=None
     ):
         if features is None:
             features = self.feature_list
@@ -264,6 +264,112 @@ class HLDecisionDataset:
             raise ValueError("No target specified")
 
         return feature_matrix[feature_mask], target_value[feature_mask]
+
+    def select_seq_X_Y(
+            self,
+            frames: pd.DataFrame,
+            features=None,
+            target=None,
+            seq_len=1,
+            input_mask_fn=None,
+            candidate_mask_fn=None,
+            target_mask_fn=None,
+            default_features=None,
+    ):
+        if features is None:
+            features = self.feature_list
+        if default_features is None:
+            default_features = FEATURE_DEFAULTS
+
+        if frames.empty:
+            feature_dim = len(features) if features is not None else 0
+            target_dim = len(target) if target is not None else 0
+            return np.empty((0, seq_len, feature_dim), dtype=np.float32), np.empty((0, target_dim),
+                                                                                   dtype=np.float32)
+        if seq_len < 1:
+            raise ValueError(f"seq_len must be >= 1, got {seq_len}")
+
+        features_df = frames[features].copy() if features is not None else frames.copy()
+        features_df = features_df.fillna(default_features)
+
+        targets_value = np.zeros(len(features_df), dtype=np.float32)
+        if isinstance(target, int) or isinstance(target, float):
+            targets_value.fill(target)
+        elif isinstance(target, np.ndarray):
+            if target.shape[0] != len(features_df):
+                raise ValueError(f"Invalid target shape. Expected {len(features_df)}, got {target.shape[0]}.")
+            targets_value = target.astype(np.float32, copy=False)
+        elif callable(target_mask_fn):
+            targets_value = np.asarray(target_mask_fn(frames), dtype=np.float32)
+            if targets_value.shape[0] != len(features_df):
+                raise ValueError(f"Invalid target mask shape. Expected {len(features_df)}, got {targets_value.shape[0]}.")
+        else:
+            raise ValueError("No target specified")
+
+        if callable(candidate_mask_fn):
+            candidate_mask = np.asarray(candidate_mask_fn(frames), dtype=bool)
+        elif candidate_mask_fn is None:
+            candidate_mask = np.ones(len(frames), dtype=bool)
+        else:
+            candidate_mask = np.asarray(candidate_mask_fn, dtype=bool)
+        if candidate_mask.shape[0] != len(frames):
+            raise ValueError(f"Invalid candidate mask shape. Expected {len(frames)}, got {candidate_mask.shape[0]}")
+
+        input_valid_mask = np.ones(len(frames), dtype=bool)
+        if input_mask_fn is not None:
+            input_valid_mask = np.asarray(input_mask_fn(frames), dtype=bool)
+        if input_valid_mask.shape[0] != len(frames):
+            raise ValueError(f"Invalid input mask shape. Expected {len(frames)}, got {input_valid_mask.shape[0]}")
+
+        frames = frames[input_valid_mask].copy()
+        features_df = features_df[input_valid_mask]
+        feature_matrix = features_df.to_numpy(np.float32)
+        targets_value = targets_value[input_valid_mask]
+        candidate_mask = candidate_mask[input_valid_mask]
+
+        X = []
+        Y = []
+
+        if "round_id" in frames.columns:
+            round_groups = frames.groupby(frames["round_id"], sort=False)
+        else:
+            round_groups = [(None, frames)]
+
+        for _, round_df in round_groups:
+            round_idx = frames.index.get_indexer(round_df.index)
+            if len(round_idx) < seq_len:
+                continue
+
+            round_candidate_mask = candidate_mask[round_idx]
+            for end in range(seq_len - 1, len(round_idx)):
+                start = end - seq_len + 1
+
+                if end >= len(round_idx):
+                    continue
+
+                keep = round_candidate_mask[end]
+                if not keep:
+                    continue
+
+                frame_idx = round_idx[start:end + 1]
+                target_idx = round_idx[end]
+                x = feature_matrix[frame_idx]
+                y = targets_value[target_idx]
+                if not np.isfinite(x).all() or not np.isfinite(y).all():
+                    continue
+                X.append(x)
+                Y.append(y)
+
+        feature_dim = feature_matrix.shape[1]
+        target_dim = 1 if targets_value.ndim == 1 else targets_value.shape[1]
+        if not X:
+            return np.empty((0, seq_len, feature_dim), dtype=np.float32), np.empty((0, target_dim),
+                                                                                   dtype=np.float32)
+
+        Y = np.asarray(Y, dtype=np.float32)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+        return np.asarray(X, dtype=np.float32), Y
 
     def positive_prev_mask(self, frames, transition_context=DEFAULT_TRANSITION_CONTEXT, label_name=None, label_type=None):
         positive_prev_mask = np.zeros(len(frames), dtype=bool)  # global mask (frames,)
@@ -333,6 +439,16 @@ class HLDecisionDataset:
 
         return X[sample_idx], Y[sample_idx]
 
+    @staticmethod
+    def shuffle_X_Y(X: np.ndarray, Y: np.ndarray, seed=42):
+        if X.shape[0] != Y.shape[0]:
+            raise ValueError(f"X and Y must have the same dimension 0, got X:{X.shape!r} and Y:{Y.shape!r} instead.")
+        if X.shape[0] <= 1:
+            return X, Y
+        rng = np.random.default_rng(seed=seed)
+        idx = rng.permutation(X.shape[0])
+        return X[idx], Y[idx]
+
     def smart_sample(
             self,
             pos_X,
@@ -388,7 +504,8 @@ class HLDecisionDataset:
             print(f"negative_X: {negative_X.shape} | negative_Y: {negative_Y.shape}")
             print(f"total: {pos_X.shape[0] + negative_X.shape[0]}")
 
-        return self.concatenate_X_Y(pos_X, pos_Y, negative_X, negative_Y)
+        sampled_X, sampled_Y = self.concatenate_X_Y(pos_X, pos_Y, negative_X, negative_Y)
+        return self.shuffle_X_Y(sampled_X, sampled_Y)
 
 
     def get_sampled_X_Y(
@@ -463,6 +580,90 @@ class HLDecisionDataset:
         )
         return sampled_X, sampled_Y
 
+    def get_seq_sampled_X_Y(
+            self,
+            frames,
+            seq_len=DEFAULT_TRANSITION_CONTEXT,
+            transition_context=DEFAULT_TRANSITION_CONTEXT,
+            label_name=None,
+            label_type=None,
+            hard_negative_mask=True,
+            easy_negative_mask=True,
+            positive_to_negative=0.5,
+            prefer_hard_negative=False,
+            sample_mode="even",
+            features=None,
+            msg=True,
+    ):
+        if label_name is None:
+            label_name = self.label_name
+        if label_type is None:
+            label_type = self.label_type
+        if label_name is None:
+            raise ValueError("label_name is required")
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        # if seq_len < transition_context:
+        #     print(f"Warning: seq_len={seq_len} is smaller than transition_context={transition_context}.")
+
+        positive_mask = self.positive_prev_mask(frames, transition_context, label_name, label_type)
+        valid_mask = np.asarray(self.is_valid_tick(frames), dtype=bool)
+        if callable(hard_negative_mask):
+            hard_negative_mask = np.asarray(hard_negative_mask(frames), dtype=bool)
+        else:
+            hard_negative_mask = np.asarray(hard_negative_mask, dtype=bool)
+        if callable(easy_negative_mask):
+            easy_negative_mask = np.asarray(easy_negative_mask(frames), dtype=bool)
+        else:
+            easy_negative_mask = np.asarray(easy_negative_mask, dtype=bool)
+
+        pos_X, pos_Y = self.select_seq_X_Y(
+            frames=frames,
+            features=features,
+            seq_len=seq_len,
+            input_mask_fn=lambda f:
+                valid_mask,
+            candidate_mask_fn=lambda f:
+                positive_mask,
+            target=1
+        )
+        hard_X, hard_Y = self.select_seq_X_Y(
+            frames,
+            features=features,
+            seq_len=seq_len,
+            input_mask_fn = lambda f:
+                valid_mask,
+            candidate_mask_fn=lambda f:
+                hard_negative_mask &
+                ~positive_mask,
+            target=0
+        )
+        easy_X, easy_Y = self.select_seq_X_Y(
+            frames,
+            features=features,
+            seq_len=seq_len,
+            input_mask_fn=lambda f:
+                valid_mask,
+            candidate_mask_fn=lambda f:
+                easy_negative_mask &
+                ~positive_mask,
+            target=0
+        )
+        sampled_X, sampled_Y = self.smart_sample(
+            pos_X,
+            pos_Y,
+            hard_X,
+            hard_Y,
+            easy_X,
+            easy_Y,
+            positive_to_negative=positive_to_negative,
+            prefer_hard_negative=prefer_hard_negative,
+            mode=sample_mode,
+            msg=msg
+        )
+        return sampled_X, sampled_Y
+
+
     def get_realistic_X_Y(
             self,
             frames,
@@ -485,6 +686,35 @@ class HLDecisionDataset:
         )
         return X, Y
 
+    def get_seq_realistic_X_Y(
+            self,
+            frames,
+            seq_len=DEFAULT_TRANSITION_CONTEXT,
+            transition_context=DEFAULT_TRANSITION_CONTEXT,
+            label_name=None,
+            label_type=None,
+            features=None,
+    ):
+        if label_name is None:
+            label_name = self.label_name
+        if label_type is None:
+            label_type = self.label_type
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        # if seq_len < transition_context:
+            # print(f"Warning: seq_len={seq_len} is smaller than transition_context={transition_context}.")
+
+        positive_mask = self.positive_prev_mask(frames, transition_context, label_name, label_type)
+        targets = np.asarray(positive_mask, dtype=np.float32)
+        X, Y = self.select_seq_X_Y(
+            frames=frames,
+            features=features,
+            seq_len=seq_len,
+            input_mask_fn=lambda f: self.is_valid_tick(frames),
+            target=targets,
+        )
+        return X, Y
+
     def get_train_X_Y(
             self,
             transition_context=DEFAULT_TRANSITION_CONTEXT,
@@ -499,8 +729,25 @@ class HLDecisionDataset:
             seq_len=1,
             msg=True,
     ):
-        return self.get_sampled_X_Y(
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        if seq_len == 1:
+            return self.get_sampled_X_Y(
+                self.train_frames,
+                transition_context=transition_context,
+                label_name=label_name,
+                label_type=label_type,
+                hard_negative_mask=hard_negative_mask,
+                easy_negative_mask=easy_negative_mask,
+                positive_to_negative=positive_to_negative,
+                prefer_hard_negative=prefer_hard_negative,
+                sample_mode=sample_mode,
+                features=features,
+                msg=msg,
+            )
+        return self.get_seq_sampled_X_Y(
             self.train_frames,
+            seq_len=seq_len,
             transition_context=transition_context,
             label_name=label_name,
             label_type=label_type,
@@ -512,7 +759,6 @@ class HLDecisionDataset:
             features=features,
             msg=msg,
         )
-
 
     def get_val_X_Y(
             self,
@@ -528,8 +774,25 @@ class HLDecisionDataset:
             seq_len=1,
             msg=True,
     ):
-        return self.get_sampled_X_Y(
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        if seq_len == 1:
+            return self.get_sampled_X_Y(
+                self.val_frames,
+                transition_context=transition_context,
+                label_name=label_name,
+                label_type=label_type,
+                hard_negative_mask=hard_negative_mask,
+                easy_negative_mask=easy_negative_mask,
+                positive_to_negative=positive_to_negative,
+                prefer_hard_negative=prefer_hard_negative,
+                sample_mode=sample_mode,
+                features=features,
+                msg=msg,
+            )
+        return self.get_seq_sampled_X_Y(
             self.val_frames,
+            seq_len=seq_len,
             transition_context=transition_context,
             label_name=label_name,
             label_type=label_type,
@@ -550,8 +813,19 @@ class HLDecisionDataset:
             features=None,
             seq_len=1,
     ):
-        return self.get_realistic_X_Y(
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        if seq_len == 1:
+            return self.get_realistic_X_Y(
+                self.test_frames,
+                transition_context=transition_context,
+                label_name=label_name,
+                label_type=label_type,
+                features=features
+            )
+        return self.get_seq_realistic_X_Y(
             self.test_frames,
+            seq_len=seq_len,
             transition_context=transition_context,
             label_name=label_name,
             label_type=label_type,
@@ -575,3 +849,12 @@ class HLDecisionDataset:
         result = {int(v): int(c) for v, c in zip(values, counts)}
         print(f"target_distribution: {result}")
         return result
+
+
+if __name__ == "__main__":
+    ds = HLDecisionDataset(label_name="pearl", label_type=["tryhard", "side"], use_cache=True, build_cache=False)
+    train_X, train_Y = ds.get_train_X_Y(transition_context=20, seq_len=40)
+    test_X, test_Y = ds.get_test_X_Y(transition_context=20, seq_len=40)
+
+    print(train_X.shape, train_Y.shape)
+    print(test_X.shape, test_Y.shape)
