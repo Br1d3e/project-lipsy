@@ -99,7 +99,7 @@ public class ProjectLipsy {
             blockhit.cancel("status " + status);
         }
 
-        if (status != Status.REFILL) {
+        if (status != Status.REFILL && status != Status.SPEED && status != Status.EAT) {
             refill.resetGuiScreen();
         }
 

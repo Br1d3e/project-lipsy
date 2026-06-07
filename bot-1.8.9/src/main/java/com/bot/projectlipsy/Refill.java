@@ -80,7 +80,9 @@ public class Refill {
             }
         }
 
-        openInventory();
+        if (!openInventory()) {
+            return false;
+        }
         boolean inventoryOpen = mc.currentScreen instanceof GuiInventory;
         mc.thePlayer.sendChatMessage(String.format("[Project L1psy] Refill: inventoryOpen=%s", inventoryOpen));
         if (!inventoryOpen) {
@@ -98,7 +100,6 @@ public class Refill {
                             refillTicks = nextRefillTicks();
                             if (amount <= 1 || getRefillAmount() <= 0) {
                                 stopRefilling();
-                                resetGuiScreen();
                                 return true;
                             }
                             return false;
@@ -115,7 +116,6 @@ public class Refill {
             }
         }
         stopRefilling();
-        resetGuiScreen();
         return true;
     }
 
@@ -125,8 +125,14 @@ public class Refill {
 
     public boolean refillSpeed() {
         if (mc.thePlayer == null) return false;
-        if (hasHotbarSpeed()) return true;
-        if (!hasInventorySpeed()) return false;
+        if (hasHotbarSpeed()) {
+            resetGuiScreen();
+            return true;
+        }
+        if (!hasInventorySpeed()) {
+            resetGuiScreen();
+            return false;
+        }
         if (!tickRefillDelay()) return false;
 
         if (!openInventory()) return false;
@@ -137,13 +143,20 @@ public class Refill {
 
         mc.playerController.windowClick(mc.thePlayer.inventoryContainer.windowId, sourceSlot, targetSlot, 2, mc.thePlayer);
         refillTicks = nextRefillTicks();
+        resetGuiScreen();
         return true;
     }
 
     public boolean refillFood() {
         if (mc.thePlayer == null) return false;
-        if (hasHotbarFoodInFoodSlot()) return true;
-        if (!hasInventoryFood()) return false;
+        if (hasHotbarFoodInFoodSlot()) {
+            resetGuiScreen();
+            return true;
+        }
+        if (!hasInventoryFood()) {
+            resetGuiScreen();
+            return false;
+        }
         if (!tickRefillDelay()) return false;
 
         if (!openInventory()) return false;
@@ -154,6 +167,7 @@ public class Refill {
 
         mc.playerController.windowClick(mc.thePlayer.inventoryContainer.windowId, sourceSlot, FOOD_SLOT, 2, mc.thePlayer);
         refillTicks = nextRefillTicks();
+        resetGuiScreen();
         return true;
     }
 
@@ -171,6 +185,7 @@ public class Refill {
     private boolean openInventory() {
         if (mc.currentScreen == null) {
             mc.displayGuiScreen(new GuiInventory(mc.thePlayer));
+            return false;
         }
 
         boolean inventoryOpen = mc.currentScreen instanceof GuiInventory;

@@ -339,7 +339,7 @@ public class Healing {
 
     public boolean speedActive() {
         return (
-                mc.thePlayer.isPotionActive(Potion.moveSpeed) ||
+                mc.thePlayer.isPotionActive(Potion.moveSpeed) &&
                         mc.thePlayer.getActivePotionEffect(Potion.moveSpeed).getDuration() >= 80 * 20
         );
     }
