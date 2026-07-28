@@ -13,6 +13,7 @@ import java.util.Locale;
 public class ModelConnect {
     private static final String MODEL_HOST = "127.0.0.1";
     private static final int MODEL_PORT = 33333;
+    public static final int WTAP_ACTION_INDEX = 8;
     private static final long RETRY_DELAY_MS = 2000L;
     private static final int FAR_TICKS = 100000;
     private static final int PEARL_COOLDOWN_TICKS = 320;

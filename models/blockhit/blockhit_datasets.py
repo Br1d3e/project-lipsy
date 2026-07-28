@@ -23,13 +23,13 @@ class BlockhitDataset:
     def make_windows(self, rounds, seq_len = 1, stride = 1):
         return self.datasets.make_windows(rounds, self.feature_list, TARGETS, seq_len, stride, label_filter="attack")
 
-    def get_X_Y(self, frames, seq_len=1, extra_candidate_mask_fn=None):
-        if extra_candidate_mask_fn is None:
-            extra_candidate_mask_fn = self.blockhit_mask_fn
+    def get_X_Y(self, frames, seq_len=1, feature_mask_fn=None):
+        if feature_mask_fn is None:
+            feature_mask_fn = self.blockhit_mask_fn
         return self.datasets.select_X_Y_by_label(
             frames, self.feature_list, TARGETS, seq_len,
             label_name="attack",
-            extra_candidate_mask_fn=extra_candidate_mask_fn
+            feature_mask_fn=feature_mask_fn
         )
 
     def get_features_targets(self, rounds, seq_len = 1, stride = 1):

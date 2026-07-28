@@ -269,7 +269,8 @@ class Datasets:
             features=None,
             targets=None,
             seq_len=1,
-            candidate_mask_fn=None,
+            feature_mask_fn=None,
+            target_mask_fn=None,
             filter_mode="last",
     ):
         if filter_mode not in ["last", "all", None]:
@@ -288,14 +289,23 @@ class Datasets:
         targets_df = frames[targets] if targets is not None else frames
         targets_value = targets_df.to_numpy(np.float32)
 
-        if callable(candidate_mask_fn):
-            candidate_mask = np.asarray(candidate_mask_fn(frames), dtype=bool)
-        elif candidate_mask_fn is None:
-            candidate_mask = np.ones(len(frames), dtype=bool)
+        if callable(feature_mask_fn):
+            feature_mask = np.asarray(feature_mask_fn(frames), dtype=bool)
+        elif feature_mask_fn is None:
+            feature_mask = np.ones(len(frames), dtype=bool)
         else:
-            candidate_mask = np.asarray(candidate_mask_fn, dtype=bool)
-        if candidate_mask.shape[0] != len(frames):
-            raise ValueError(f"Invalid candidate mask shape. Expected {len(frames)}, got {candidate_mask.shape[0]}")
+            feature_mask = np.asarray(feature_mask_fn, dtype=bool)
+        if feature_mask.shape[0] != len(frames):
+            raise ValueError(f"Invalid feature mask shape. Expected {len(frames)}, got {feature_mask.shape[0]}")
+
+        if callable(target_mask_fn):
+            target_mask = np.asarray(target_mask_fn(frames), dtype=bool)
+        elif target_mask_fn is None:
+            target_mask = np.ones(len(frames), dtype=bool)
+        else:
+            target_mask = np.asarray(target_mask_fn, dtype=bool)
+        if target_mask.shape[0] != len(frames):
+            raise ValueError(f"Invalid target mask shape. Expected {len(frames)}, got {target_mask.shape[0]}")
 
         X = []
         Y = []
@@ -310,7 +320,8 @@ class Datasets:
             if len(round_idx) < seq_len:
                 continue
 
-            round_candidate_mask = candidate_mask[round_idx]
+            round_feature_mask = feature_mask[round_idx]
+            round_target_mask = target_mask[round_idx]
             for end in range(seq_len - 1, len(round_idx)):
                 start = end - seq_len + 1
                 target_pos = end + 1
@@ -319,12 +330,12 @@ class Datasets:
                     continue
 
                 if filter_mode == "last":
-                    keep = round_candidate_mask[target_pos]
+                    keep = round_feature_mask[end]
                 elif filter_mode == "all":
-                    keep = round_candidate_mask[start:target_pos + 1].all()
+                    keep = round_feature_mask[start:end + 1].all()
                 else:
                     keep = True
-                if not keep:
+                if not keep or not round_target_mask[target_pos]:
                     continue
 
                 frame_idx = round_idx[start:end + 1]
@@ -381,14 +392,26 @@ class Datasets:
             seq_len=1,
             label_name=None,
             label_type=None,
-            extra_candidate_mask_fn=None,
+            feature_mask_fn=None,
+            target_mask_fn=None,
             filter_mode="all",
     ):
-        label_candidate_mask = self.label_active_mask(frames, label_name, label_type)
-        if callable(extra_candidate_mask_fn):
-            extra_candidate_mask = extra_candidate_mask_fn(frames)
-            return self.select_X_Y(frames, features, targets, seq_len, label_candidate_mask & extra_candidate_mask, filter_mode)
-        return self.select_X_Y(frames, features, targets, seq_len, label_candidate_mask, filter_mode)
+        label_target_mask = self.label_active_mask(frames, label_name, label_type)
+        if target_mask_fn is not None:
+            extra_target_mask = target_mask_fn(frames) if callable(target_mask_fn) else target_mask_fn
+            extra_target_mask = np.asarray(extra_target_mask, dtype=bool)
+            if extra_target_mask.shape[0] != len(frames):
+                raise ValueError(f"Invalid target mask shape. Expected {len(frames)}, got {extra_target_mask.shape[0]}")
+            label_target_mask &= extra_target_mask
+        return self.select_X_Y(
+            frames,
+            features,
+            targets,
+            seq_len,
+            feature_mask_fn=feature_mask_fn,
+            target_mask_fn=label_target_mask,
+            filter_mode=filter_mode,
+        )
 
     def make_windows(self, rounds, features, targets, seq_len=1, stride=1, label_filter: str=None,
                      candidate_mask_fn=None):

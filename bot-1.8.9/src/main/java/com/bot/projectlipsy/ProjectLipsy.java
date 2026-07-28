@@ -44,6 +44,9 @@ public class ProjectLipsy {
 
     private int refillAmount;
 
+    public int tickIndex = 0;
+    private int lastPearlTick = -1;
+
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) throws Exception {
         // This runs when the mod loads
@@ -165,6 +168,7 @@ public class ProjectLipsy {
                 break;
 
         }
+        tickIndex++;
     }
 
     private void statusController(EntityPlayer target) {
@@ -189,6 +193,11 @@ public class ProjectLipsy {
         boolean shouldHeal = mc.thePlayer.getHealth() <= 14;
         boolean ruleShouldHeal = mc.thePlayer.getHealth() <= 12;
         boolean mustHeal = mc.thePlayer.getHealth() <= 4;
+
+        if (!mustHeal && tickIndex - lastPearlTick <= 80) {
+            status = Status.ATTACK;
+            return;
+        }
 
         if (mustHeal && canHeal) {
             healing.startHealingSequence();
@@ -250,22 +259,35 @@ public class ProjectLipsy {
 //                        return;
 //                    }
 //                }
-                if (pearlProb >= 0.38) {
+                if (predPearl) {
                     status = Status.PEARL;
                     pearl.startPearlSequence(target);
-                    mc.thePlayer.sendChatMessage(String.format(
-                            Locale.US,
-                            "[Project L1psy] Pearl accepted prob=%.2f",
-                            pearlProb
-                    ));
+//                    mc.thePlayer.sendChatMessage(String.format(
+//                            Locale.US,
+//                            "[Project L1psy] Pearl accepted prob=%.2f",
+//                            pearlProb
+//                    ));
+                    lastPearlTick = tickIndex;
                     return;
-//                } else {
+                } else {
 //                    mc.thePlayer.sendChatMessage(String.format(
 //                            Locale.US,
 //                            "[Project L1psy] Pearl rejected prob=%.2f",
 //                            pearlProb
 //                    ));
                 }
+//                mc.thePlayer.sendChatMessage(
+//                        String.format(
+//                                Locale.US,
+//                                "[Project L1psy] allowPearl prob=%.2f",
+//                                pearlProb
+//                        ));
+            } else {
+//                mc.thePlayer.sendChatMessage(String.format(
+//                        Locale.US,
+//                        "[Project L1psy] !allowPearl rejected prob=%.2f",
+//                        pearlProb
+//                ));
             }
         }
 
