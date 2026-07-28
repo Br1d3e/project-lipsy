@@ -34,7 +34,7 @@ from models.torch_dataset import TorchDataset
 from models.aim.aim_datasets import AimDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "aim_lstm_7.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "aim_lstm_11.pth")
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,

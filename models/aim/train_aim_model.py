@@ -11,14 +11,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 
 
 SEQ_LEN = 20
 BATCH_SIZE = 64
-EPOCHS = 100
+EPOCHS = 120
 LEARNING_RATE = 1e-3
 LOSS_TYPE = "huber"
 HUBER_BETA = 2.0
@@ -325,12 +325,23 @@ def eval_model(model, dataloader, graph=False, diagnostics=False):
 
 
 if __name__ == "__main__":
-    aim_dataset = AimDataset(feature_mode="RNN", use_cache=True, build_cache=False)
-    train_x, train_y = aim_dataset.get_train_X_Y(seq_len=SEQ_LEN)
+    yaw_buckets = (15.0, 45.0)
+    yaw_bucket_distribution = (0.8, 0.2, 0.0)
+    aim_dataset = AimDataset(feature_mode="RNN", use_cache=True, build_cache=False,
+                             yaw_buckets=yaw_buckets, yaw_bucket_distribution=yaw_bucket_distribution)
+    train_x, train_y, train_sample_weights = aim_dataset.get_train_X_Y(
+        seq_len=SEQ_LEN,
+        return_sample_weights=True,
+    )
     train_dataset = TorchDataset(train_x, train_y)
     if len(train_dataset) == 0:
         raise ValueError("No training data found.")
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    train_sampler = WeightedRandomSampler(
+        train_sample_weights,
+        num_samples=len(train_dataset),
+        replacement=True,
+    )
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler)
 
     print_target_clamp_suggestions(train_dataset)
 
@@ -341,7 +352,7 @@ if __name__ == "__main__":
     sample_x = train_dataset[0][0]
     input_dim = sample_x.numel()
     feature_dim = sample_x.shape[-1]
-    model_name = "LSTM 7"
+    model_name = "LSTM 11 (normal aiming)"
     # architecture = f"{input_dim} -> conv1d 32 -> conv1d 64 -> conv1d 128 -> 256 -> 512 -> avg pool 1 -> linear 256 -> linear 128 -> linear 64 -> 2"
     architecture = f"{input_dim} -> {feature_dim}"
     # MLP input_dim should be sample_x.numel() because MLP flattens the full window.
@@ -351,7 +362,7 @@ if __name__ == "__main__":
     # model = AimGRU(input_dim=sample_x.shape[-1], output_dim=2)
     # model = Aim1dCNN(input_dim=sample_x.shape[-1], output_dim=2, conv_channels=[32, 64, 128, 256, 512], linear_channels=[256, 128, 64])
 
-    model_path = os.path.join(BASE_DIR, "aim_lstm_7.pth")
+    model_path = os.path.join(BASE_DIR, "aim_lstm_11.pth")
     checkpoint_meta = {
         "model_class": type(model).__name__,
         "model_name": model_name,
@@ -378,9 +389,9 @@ if __name__ == "__main__":
 
     eval_model(model=model, dataloader=val_loader, graph=True)
     print(f"Config: \n"
-          f"  model: {model_name}\n"
-          f"  input_dim: {input_dim}\n"
-          f"  architecture: {architecture}\n"
+          f"  model: {model}\n"
+          # f"  input_dim: {input_dim}\n"
+          # f"  architecture: {architecture}\n"
           f"  seq_len: {SEQ_LEN}\n"
           f"  batch_size: {BATCH_SIZE}\n"
           f"  learning_rate: {LEARNING_RATE}\n"
@@ -389,6 +400,8 @@ if __name__ == "__main__":
           f"  huber_beta: {HUBER_BETA}\n"
           f"  yaw_weight: {YAW_WEIGHT}\n"
           f"  pitch_weight: {PITCH_WEIGHT}\n"
+          f"  yaw_buckets: {yaw_buckets}\n"
+          f"  yaw_bucket_distribution: {yaw_bucket_distribution}\n"
           f"  best_epoch: {train_info['best_epoch']}\n"
           f"  best_val_loss: {train_info['best_val_loss']:.6f}\n"
           f"  best_val_rmse: {np.sqrt(train_info['best_val_loss']):.6f}\n")
