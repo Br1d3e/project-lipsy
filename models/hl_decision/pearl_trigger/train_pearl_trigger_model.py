@@ -15,8 +15,10 @@ import shap
 import pandas as pd
 from sklearn.metrics import log_loss
 
-CONTEXT = 80
-SEQ_LEN = 40
+
+BEFORE_CONTEXT = 20
+AFTER_CONTEXT = 10
+SEQ_LEN = 20
 LEARNING_RATE = 0.001
 EPOCHS = 150
 PATIENCE = 25
@@ -24,7 +26,7 @@ CLASS_WEIGHTS = torch.tensor((1.0, 5.0), dtype=torch.float32)
 BATCH_SIZE = 128
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "pearl_trigger_xgb_7.json")
+MODEL_PATH = os.path.join(BASE_DIR, "pearl_trigger_xgb_6.json")
 
 
 class TrainPearlXgb(TrainXgbModel):
@@ -36,7 +38,7 @@ class TrainPearlXgb(TrainXgbModel):
     def train(self, model=None, save_path=None):
         return TrainXgbModel.train(self, model, save_path)
 
-    def eval(self, model=None):
+    def eval(self, model=None, show_plot=False):
         TrainXgbModel.eval(self, model)
         x_eval, y_eval = self.get_X_Y(self.val_dataset)
         x_eval = x_eval.detach().cpu().numpy()
@@ -44,7 +46,7 @@ class TrainPearlXgb(TrainXgbModel):
 
         p = model.predict_proba(x_eval)[:, 1]
 
-        for p_thres in np.linspace(0.2, 0.6, 9):
+        for p_thres in np.linspace(0.2, 0.8, 13):
             y_pred = (p > float(p_thres)).astype(np.int64)
             print("\np_thres=", p_thres)
             print("pred positives:", y_pred.sum())
@@ -76,9 +78,9 @@ class TrainPearlXgb(TrainXgbModel):
         booster = model.get_booster()
         booster.feature_names = FEATURES
 
-        # xgb.plot_importance(booster, importance_type='gain', max_num_features=30)
-
-        # plt.show()
+        if show_plot:
+            xgb.plot_importance(booster, importance_type='gain', max_num_features=30)
+            plt.show()
 
         x_eval_df = pd.DataFrame(x_eval, columns=FEATURES)
 
@@ -101,7 +103,8 @@ class TrainPearlXgb(TrainXgbModel):
 
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(x_eval)
-        # shap.summary_plot(shap_values, x_eval_df)
+        if show_plot:
+            shap.summary_plot(shap_values, x_eval_df)
 
     @staticmethod
     def print_confusion_matrix(y_eval, y_pred):
@@ -163,10 +166,20 @@ class TrainPearlTorchModel(TrainTorchModel):
 
 if __name__ == "__main__":
     pearl_trigger_dataset = PearlTriggerDataset(use_cache=True, build_cache=False, pearl_type="offensive")
-    # train_data = pearl_trigger_dataset.get_train_X_Y(transition_context=CONTEXT, prefer_hard_negative=False,
-    #                                                  positive_to_negative=1/15, sample_mode="even", pearl_type="offensive")
-    # val_data = pearl_trigger_dataset.get_val_X_Y(transition_context=CONTEXT,
-    #                                              positive_to_negative=1/15, sample_mode="random", pearl_type="offensive")
+    # train_data = pearl_trigger_dataset.get_train_X_Y(
+    #     transition_context=BEFORE_CONTEXT,
+    #     after_transition_context=AFTER_CONTEXT,
+    #     positive_to_negative=0.01,
+    #     sample_mode="even",
+    #     pearl_type="offensive",
+    # )
+    # val_data = pearl_trigger_dataset.get_val_X_Y(
+    #     transition_context=BEFORE_CONTEXT,
+    #     after_transition_context=AFTER_CONTEXT,
+    #     positive_to_negative=None,
+    #     sample_mode="random",
+    #     pearl_type="offensive",
+    # )
     #
     # train_pearl_xgb = TrainPearlXgb(train_data, val_data)
     # model = xgb.XGBClassifier(
@@ -193,11 +206,14 @@ if __name__ == "__main__":
     #
     # train_pearl_xgb.eval(model)
 
-    train_X, train_Y = pearl_trigger_dataset.get_train_X_Y(seq_len=SEQ_LEN, transition_context=CONTEXT,
-                                                           positive_to_negative=1 / 18, sample_mode="even",
+
+    train_X, train_Y = pearl_trigger_dataset.get_train_X_Y(seq_len=SEQ_LEN, transition_context=BEFORE_CONTEXT,
+                                                           after_transition_context=AFTER_CONTEXT, sample_mode="even",
+                                                           positive_to_negative=1 / 10,
                                                            pearl_type="offensive")
-    val_X, val_Y = pearl_trigger_dataset.get_val_X_Y(seq_len=SEQ_LEN, transition_context=CONTEXT,
-                                                     positive_to_negative=1 / 18, sample_mode="even",
+    val_X, val_Y = pearl_trigger_dataset.get_val_X_Y(seq_len=SEQ_LEN, transition_context=BEFORE_CONTEXT,
+                                                    after_transition_context=AFTER_CONTEXT, sample_mode="random",
+                                                     positive_to_negative=1 / 15,
                                                      pearl_type="offensive")
     train_dataset = TorchDataset(train_X, train_Y)
     val_dataset = TorchDataset(val_X, val_Y)
@@ -208,9 +224,9 @@ if __name__ == "__main__":
     output_dim = 2
 
     model = PearlTriggerLSTM(input_dim=input_dim, hidden_dim=128, num_layers=2, output_dim=output_dim)
-    model_name = "Pearl Trigger LSTM 5"
-    model_path = os.path.join(BASE_DIR, "pearl_trigger_lstm_5.pth")
-    architecture = f"LSTM(input_dim={input_dim}, hidden=128, layers=2) -> 64 -> {output_dim}"
+    model_name = "Pearl Trigger LSTM 1"
+    model_path = os.path.join(BASE_DIR, "pearl_trigger_lstm_4.pth")
+    architecture = f"LSTM(input_dim={input_dim}, hidden=64, layers=1) -> 64 -> {output_dim}"
 
     checkpoint_meta = {
         "model_class": type(model).__name__,
@@ -233,11 +249,9 @@ if __name__ == "__main__":
 
     trainer.eval(model=model, graph=True, confusion_matrix=True)
     print(f"Config: \n"
-          f"  model: {model_name}\n"
-          f"  input_dim: {input_dim}\n"
-          f"  architecture: {architecture}\n"
-          f"  seq_len: {SEQ_LEN}\n"
-          f"  context: {CONTEXT}\n"
+          f"  model: \n{model}\n"
+          f"  before_context: {BEFORE_CONTEXT}\n"
+          f"  after_context: {AFTER_CONTEXT}\n"
           # f"  batch_size: {BATCH_SIZE}\n"
           # f"  learning_rate: {LEARNING_RATE}\n"
           # f"  epochs: {EPOCHS}\n"

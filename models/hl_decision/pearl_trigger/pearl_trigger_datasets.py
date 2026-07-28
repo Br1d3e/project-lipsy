@@ -1,4 +1,9 @@
-from models.hl_decision.hl_decision_datasets import DEFAULT_TRANSITION_CONTEXT, HLDecisionDataset
+from models.hl_decision.hl_decision_datasets import (
+    DEFAULT_ATTACK_SAMPLE_RATIO,
+    DEFAULT_AFTER_TRANSITION_CONTEXT,
+    DEFAULT_TRANSITION_CONTEXT,
+    HLDecisionDataset,
+)
 
 
 HIGH_HP_THRESHOLD = 16
@@ -54,10 +59,14 @@ class PearlTriggerDataset(HLDecisionDataset):
             return "retreat"
         return ["tryhard", "side", "agro", "retreat"]
 
-    def get_train_X_Y(self, seq_len=1, transition_context=DEFAULT_TRANSITION_CONTEXT, positive_to_negative=0.5,
+    def get_train_X_Y(self, seq_len=1, transition_context=DEFAULT_TRANSITION_CONTEXT,
+                      after_transition_context=DEFAULT_AFTER_TRANSITION_CONTEXT,
+                      attack_sample_ratio=DEFAULT_ATTACK_SAMPLE_RATIO, positive_to_negative=0.5,
                       prefer_hard_negative=False, sample_mode="even", pearl_type=None, features=None, msg=True):
         return super().get_train_X_Y(
             transition_context=transition_context,
+            after_transition_context=after_transition_context,
+            attack_sample_ratio=attack_sample_ratio,
             label_type=self.pearl_label_type(pearl_type or self.pearl_type),
             hard_negative_mask=self.hard_negative_mask,
             easy_negative_mask=self.easy_negative_mask,
@@ -69,10 +78,14 @@ class PearlTriggerDataset(HLDecisionDataset):
             msg=msg,
         )
 
-    def get_val_X_Y(self, seq_len=1, transition_context=DEFAULT_TRANSITION_CONTEXT, positive_to_negative=0.5,
+    def get_val_X_Y(self, seq_len=1, transition_context=DEFAULT_TRANSITION_CONTEXT,
+                    after_transition_context=DEFAULT_AFTER_TRANSITION_CONTEXT,
+                    attack_sample_ratio=DEFAULT_ATTACK_SAMPLE_RATIO, positive_to_negative=0.5,
                     prefer_hard_negative=False, sample_mode="even", pearl_type=None, features=None, msg=True):
         return super().get_val_X_Y(
             transition_context=transition_context,
+            after_transition_context=after_transition_context,
+            attack_sample_ratio=attack_sample_ratio,
             label_type=self.pearl_label_type(pearl_type or self.pearl_type),
             hard_negative_mask=self.hard_negative_mask,
             easy_negative_mask=self.easy_negative_mask,
@@ -102,17 +115,23 @@ if __name__ == "__main__":
         print()
         print(pearl_type)
         print(f"[{pearl_type}] Train:")
-        train_X, train_Y = dataset.get_train_X_Y(positive_to_negative=1/10,
-                                                 transition_context=1,
-                                                 prefer_hard_negative=False,
-                                                 pearl_type=pearl_type)
+        train_X, train_Y = dataset.get_train_X_Y(
+            seq_len=20,
+            transition_context=30,
+            after_transition_context=20,
+            positive_to_negative=1 / 10,
+            pearl_type=pearl_type,
+        )
         dataset.target_distribution(train_Y)
         print(f"[{pearl_type}] Val:")
-        val_X, val_Y = dataset.get_val_X_Y(positive_to_negative=1/15,
-                                           transition_context=1,
-                                           prefer_hard_negative=False,
-                                           sample_mode="random",
-                                           pearl_type=pearl_type)
+        val_X, val_Y = dataset.get_val_X_Y(
+            seq_len=20,
+            transition_context=20,
+            after_transition_context=20,
+            positive_to_negative=None,
+           sample_mode="random",
+           pearl_type=pearl_type
+        )
         dataset.target_distribution(val_Y)
         print(f"[{pearl_type}] Test:")
         test_X, test_Y = dataset.get_test_X_Y(pearl_type=pearl_type, transition_context=1,)

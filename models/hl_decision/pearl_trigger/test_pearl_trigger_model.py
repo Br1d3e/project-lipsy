@@ -21,16 +21,16 @@ import pandas as pd
 
 from models.hl_decision.train_hl_decision_model import TrainXgbModel
 from models.hl_decision.pearl_trigger.pearl_trigger_datasets import PearlTriggerDataset
-from models.hl_decision.pearl_trigger.train_pearl_trigger_model import CONTEXT, PearlTriggerLSTM, SEQ_LEN, BATCH_SIZE, \
+from models.hl_decision.pearl_trigger.train_pearl_trigger_model import PearlTriggerLSTM, SEQ_LEN, BATCH_SIZE, \
     TrainPearlTorchModel
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "pearl_trigger_xgb_7.json")
+MODEL_PATH = os.path.join(BASE_DIR, "pearl_trigger_xgb_6.json")
 SHAP_BACKGROUND_SAMPLES = 128
 SHAP_EVAL_SAMPLES = 512
 
 
-def eval_xgb():
+def eval_xgb(graph=False):
     model_path = MODEL_PATH
     if not os.path.exists(model_path):
         print(f"Skipping: missing model file {model_path}")
@@ -40,7 +40,7 @@ def eval_xgb():
     model.load_model(model_path)
 
     pearl_trigger_dataset = PearlTriggerDataset(use_cache=True, build_cache=False, pearl_type="offensive")
-    x_test, y_test = pearl_trigger_dataset.get_test_X_Y(transition_context=CONTEXT, pearl_type="offensive")
+    x_test, y_test = pearl_trigger_dataset.get_test_X_Y(pearl_type="offensive")
     y_test = np.asarray(y_test, dtype=np.int64).reshape(-1)
 
     y_prob = model.predict_proba(x_test)
@@ -51,7 +51,7 @@ def eval_xgb():
     accuracy = model.score(x_test, y_test)
     print(f"Accuracy: {accuracy:.6f}")
 
-    p_thres = 0.8
+    p_thres = 0.5
     y_pred = (y_prob[:, 1] > float(p_thres)).astype(np.int64)
 
     print(y_pred.sum(), y_test.sum())
@@ -61,15 +61,17 @@ def eval_xgb():
 
     model.get_booster().feature_names = FEATURES
 
-    xgb.plot_importance(model.get_booster(), importance_type='gain', max_num_features=30)
-    # plt.show()
+    if graph:
+        xgb.plot_importance(model.get_booster(), importance_type='gain', max_num_features=30)
+        plt.show()
 
     x_eval_df = pd.DataFrame(x_test, columns=FEATURES)
 
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(x_eval_df)
 
-    # shap.summary_plot(shap_values, x_eval_df)
+    if graph:
+        shap.summary_plot(shap_values, x_eval_df)
 
 
 MODEL_CLASSES = {
@@ -161,7 +163,6 @@ def eval_torch(model_path=None):
     pearl_trigger_dataset = PearlTriggerDataset(use_cache=True, build_cache=False, pearl_type="offensive")
     test_X, test_Y = pearl_trigger_dataset.get_test_X_Y(
         seq_len=SEQ_LEN,
-        transition_context=CONTEXT,
         pearl_type="offensive",
     )
     test_dataset = TorchDataset(test_X, test_Y)
@@ -201,5 +202,5 @@ def eval_torch(model_path=None):
 if __name__ == "__main__":
     # eval_xgb()
 
-    model_path = os.path.join(BASE_DIR, "pearl_trigger_lstm_5.pth")
+    model_path = os.path.join(BASE_DIR, "pearl_trigger_lstm_3.pth")
     eval_torch(model_path)
