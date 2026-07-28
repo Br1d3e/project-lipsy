@@ -19,7 +19,7 @@ public class Healing {
     private final Movement movement;
     private final Retreat retreat;
     private long lastPotTime = 0;
-    private static final int MAX_UTILITY_USE_TICKS = 40;
+    private static final int MAX_UTILITY_USE_TICKS = 50;
 
     public enum HealingState {
         NONE,
@@ -147,11 +147,6 @@ public class Healing {
         frontProb = Math.exp(frontScore) / expSum;
         turnProb = Math.exp(turnScore) / expSum;
         fastProb = Math.exp(fastScore) / expSum;
-        mc.thePlayer.sendChatMessage(
-                "turnProb: " + String.format("%.2f", turnProb) +
-                "frontProb: " + String.format("%.2f", frontProb) +
-                "fastProb: " + String.format("%.2f", fastProb)
-        );
     }
 
     public void updatePotMacro(EntityPlayer target) {
@@ -164,30 +159,15 @@ public class Healing {
         updateHealScores(target);
         computeProbabilities();
 
-//        double targetDistance = mc.thePlayer.getDistanceToEntity(target);
-//        if (targetDistance <= 3D) {
-//            if (mc.thePlayer.onGround) {
-//                potMode = HealingMode.TURN;
-//                mc.thePlayer.sendChatMessage("Turn Pot");
-//                turnPot(target);
-//            } else {
-//                potMode = HealingMode.FAST;
-//                mc.thePlayer.sendChatMessage("Fast Pot");
-//                fastPot(target);
-//            }
-//        } else
-//        if (potTicks == 1) {
-//          potMode = targetDistance < 6D ? HealingMode.TURN : HealingMode.FRONT;
-//            if (targetDistance <= 3D) {
-//                potMode = mc.thePlayer.onGround ? HealingMode.TURN : HealingMode.FAST;
-//            } else if (targetDistance <= 6D) {
-//                potMode = HealingMode.TURN;
-//            } else {
-//                potMode = HealingMode.FRONT;
-//            }
-//        }
+        if (potTicks == 1) {
+            mc.thePlayer.sendChatMessage(
+                    "turnProb: " + String.format("%.2f", turnProb) +
+                            "frontProb: " + String.format("%.2f", frontProb) +
+                            "fastProb: " + String.format("%.2f", fastProb)
+            );
+        }
 
-        if (fastProb >= 0.38D) {
+        if (fastProb >= 0.40D) {
             potMode = HealingMode.FAST;
             resetScores();
         } else if (frontProb >= 0.38D) {
@@ -221,6 +201,7 @@ public class Healing {
         movement.sprint();
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindLeft.getKeyCode(), false);
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindRight.getKeyCode(), false);
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
 
         if (potTicks == 1) {
             mc.thePlayer.rotationYaw = lookYaw;
@@ -231,7 +212,7 @@ public class Healing {
         } else if (potTicks == 5) {
             potState = HealingState.POTTING;
             mc.thePlayer.rotationPitch = 25F;
-            utils.switchItem("Splash Potion of Healing");
+            utils.switchHotbarItem("Splash Potion of Healing");
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
             waitingForCurrentPotExplosion = true;
@@ -268,7 +249,7 @@ public class Healing {
             mc.thePlayer.rotationYaw = retreatYaw;
             mc.thePlayer.rotationPitch = mc.thePlayer.onGround ? 25F : 30F;
         } else if (potTicks == 6) {
-            utils.switchItem("Splash Potion of Healing");
+            utils.switchHotbarItem("Splash Potion of Healing");
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
             potState = HealingState.POTTING;
@@ -306,7 +287,7 @@ public class Healing {
             movement.sprint();
             mc.thePlayer.rotationPitch = 45F;
         } else if (potTicks == 6) {
-            utils.switchItem("Splash Potion of Healing");
+            utils.switchHotbarItem("Splash Potion of Healing");
             movement.sprint();
             KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
             KeyBinding.onTick(mc.gameSettings.keyBindUseItem.getKeyCode());
@@ -344,12 +325,27 @@ public class Healing {
     }
 
     public boolean canEat() {
-        return this.mc.thePlayer.getFoodStats().getFoodLevel() < 20 && (utils.hasItem("Golden Carrot") || utils.hasItem("Steak"));
+        return mc.thePlayer.getFoodStats().getFoodLevel() < 20 &&
+                (utils.hasItem("Golden Carrot") || utils.hasItem("Steak"));
     }
 
     public boolean canSpeed() {
-        return (!this.mc.thePlayer.isPotionActive(Potion.moveSpeed) || this.mc.thePlayer.getActivePotionEffect
-                (Potion.moveSpeed).getDuration() < 20 * 20) && utils.hasItem("Potion of Swiftness");     // 20s
+        return (
+                !mc.thePlayer.isPotionActive(Potion.moveSpeed) || mc.thePlayer.getActivePotionEffect
+                (Potion.moveSpeed).getDuration() < 20 * 20) &&
+                utils.hasItem("Potion of Swiftness"
+        );     // 20s
+    }
+
+    public boolean speedActive() {
+        return (
+                mc.thePlayer.isPotionActive(Potion.moveSpeed) &&
+                        mc.thePlayer.getActivePotionEffect(Potion.moveSpeed).getDuration() >= 80 * 20
+        );
+    }
+
+    public boolean foodActive() {
+        return mc.thePlayer.getFoodStats().getFoodLevel() == 20;
     }
 
     public void speed() {
@@ -364,7 +360,7 @@ public class Healing {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
         speedTicks++;
 
-        if (speedTicks > MAX_UTILITY_USE_TICKS) {
+        if (speedActive() || !utils.isSpeedPotion(mc.thePlayer.getHeldItem())) {
             stopUtilityUse();
         }
     }
@@ -386,7 +382,7 @@ public class Healing {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
         eatTicks++;
 
-        if (eatTicks > MAX_UTILITY_USE_TICKS) {
+        if (foodActive() || !utils.isFood(mc.thePlayer.getHeldItem())) {
             stopUtilityUse();
         }
     }

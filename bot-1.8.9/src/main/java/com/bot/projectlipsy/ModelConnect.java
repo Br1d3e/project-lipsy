@@ -13,6 +13,7 @@ import java.util.Locale;
 public class ModelConnect {
     private static final String MODEL_HOST = "127.0.0.1";
     private static final int MODEL_PORT = 33333;
+    public static final int WTAP_ACTION_INDEX = 8;
     private static final long RETRY_DELAY_MS = 2000L;
     private static final int FAR_TICKS = 100000;
     private static final int PEARL_COOLDOWN_TICKS = 320;
@@ -188,7 +189,7 @@ public class ModelConnect {
         boolean holdingSword = utils.isHoldingSword();
         boolean useItemAction = useItemDown || mc.thePlayer.isUsingItem();
         ItemStack held = mc.thePlayer.getHeldItem();
-        ItemSnapshot inventory = snapshotInventory();
+        utils.ItemSnapshot inventory = snapshotInventory();
         updateUseTimers(held, useItemDown, holdingSword);
         updateEnemyUseTimers(target);
 
@@ -359,8 +360,8 @@ public class ModelConnect {
         modelClient = null;
     }
 
-    private ItemSnapshot snapshotInventory() {
-        ItemSnapshot snapshot = new ItemSnapshot();
+    private utils.ItemSnapshot snapshotInventory() {
+        utils.ItemSnapshot snapshot = new utils.ItemSnapshot();
         for (int i = 0; i < 36; i++) {
             ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
             int count = utils.itemCount(stack);
@@ -392,13 +393,5 @@ public class ModelConnect {
 
     private int ticksSince(int tick) {
         return tickIndex - tick;
-    }
-
-    private static class ItemSnapshot {
-        int hotbarHealthPotions = 0;
-        int food = 0;
-        int speedPotions = 0;
-        int healthPotions = 0;
-        int pearls = 0;
     }
 }

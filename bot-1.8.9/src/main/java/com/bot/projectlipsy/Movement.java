@@ -24,11 +24,34 @@ public class Movement {
         tickJump();
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindSprint.getKeyCode(), true);
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), true);
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
 
         utils.updateCombos(target);
-        wtap(target);
+        if (mc.thePlayer.getDistanceToEntity(target) <= 6 || !predictWtap(actions)) {
+            wtap(target);
+        }
         predictStrafe(actions);
         offCombo(target);
+    }
+
+    private boolean predictWtap(float[] actions) {
+        if (actions == null || actions.length <= ModelConnect.WTAP_ACTION_INDEX) return false;
+
+        int forwardAxis = Math.round(actions[ModelConnect.WTAP_ACTION_INDEX]);
+        if (forwardAxis > 0) {
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), true);
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
+            testMsg("[Project L1psy] w");
+        } else if (forwardAxis < 0) {
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), true);
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
+            testMsg("[Project L1psy] s");
+        } else {
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
+            testMsg("[Project L1psy] w released");
+        }
+        return true;
     }
 
     private void wtap(EntityPlayer target) {
@@ -81,11 +104,11 @@ public class Movement {
     private void offCombo(EntityPlayer target) {
         int targetCombo = utils.getTargetCombo();
         ticksLastJump++;
-        double probOffCombo = 1 - Math.exp(-0.13 * targetCombo);
+        double probOffCombo = 1 - Math.exp(-0.35 * targetCombo);
         if (ticksLastJump > 10 && targetCombo >= 2 && mc.thePlayer.getDistanceToEntity(target) < 3 && Math.random() < probOffCombo) {
             jump();
             ticksLastJump = 0;
-//            mc.thePlayer.sendChatMessage("[Project L1psy] attempted to jump");
+            mc.thePlayer.sendChatMessage("[Project L1psy] attempted to jump");
         }
     }
 

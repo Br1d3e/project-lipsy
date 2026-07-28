@@ -8,6 +8,7 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
 import net.minecraft.client.Minecraft;
 
 import java.util.Comparator;
+import java.util.Locale;
 
 @Mod(modid = ProjectLipsy.MODID, version = ProjectLipsy.VERSION, name = ProjectLipsy.NAME)
 public class ProjectLipsy {
@@ -41,7 +42,10 @@ public class ProjectLipsy {
     private Status status = Status.ATTACK;
     private Status prevStatus = Status.ATTACK;
 
-    private int pearlCooldownTicksRemaining = 0;
+    private int refillAmount;
+
+    public int tickIndex = 0;
+    private int lastPearlTick = -1;
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) throws Exception {
@@ -57,6 +61,7 @@ public class ProjectLipsy {
         models = new ModelConnect(mc);
         blockhit = new Blockhit(mc, Blockhit.Mode.PREDICTION);
         refill = new Refill(mc);
+        refillAmount = 0;
         // Register this class to receive tick events
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
@@ -97,7 +102,9 @@ public class ProjectLipsy {
             blockhit.cancel("status " + status);
         }
 
-        pearlCooldownTicksRemaining = Math.max(pearlCooldownTicksRemaining - 1, 0);
+        if (status != Status.REFILL && status != Status.SPEED && status != Status.EAT) {
+            refill.resetGuiScreen();
+        }
 
         switch (status) {
             case ATTACK:
@@ -121,24 +128,47 @@ public class ProjectLipsy {
                 break;
 
             case SPEED:
+                if (!refill.refillSpeed()) {
+                    break;
+                }
                 healing.speed();
                 break;
 
             case EAT:
+                if (!refill.refillFood()) {
+                    break;
+                }
                 healing.eat();
                 break;
 
             case PEARL:
-                pearl.tryhardPearl(target);
+                pearl.updatePearl(target);
                 break;
 
             case REFILL:
-                refill.refillPotions(6 - refill.hotbarPotions());
+                if (!refill.isRefilling() && (!refill.hasInventoryPotion() || refill.getRefillAmount() <= 0)) {
+                    status = Status.ATTACK;
+                    break;
+                }
+
+                double distance = mc.thePlayer.getDistanceToEntity(target);
+                double myHp = mc.thePlayer.getHealth();
+                boolean safe = distance >= 2.5D && myHp >= 6;
+
+                if (!safe) {
+                    retreat.back(target);
+                }
+                refillAmount = refill.getRefillAmount();
+                if (refill.refillPotions(refillAmount)) {
+                    status = Status.ATTACK;
+                }
+                break;
 
             default:
                 break;
 
         }
+        tickIndex++;
     }
 
     private void statusController(EntityPlayer target) {
@@ -147,16 +177,118 @@ public class ProjectLipsy {
             status = Status.HEAL;
             return;
         }
+        if (pearl.isPearling()) {
+            status = Status.PEARL;
+            return;
+        }
+        if (refill.isRefilling()) {
+            status = Status.REFILL;
+            return;
+        }
 
-        // Health check for retreating/healing
-        if (this.mc.thePlayer.getHealth() <= 10) {
-            if (healing.canPot() && utils.hasItem("Splash Potion of Healing")) {
+        // heal prediction from actions vector
+        boolean actionsAvailable = actions != null && actions.length >= 6;
+        boolean predPot = actionsAvailable && actions[5] == 1.0F;
+        boolean canHeal = healing.canPot() && refill.hasPotion() && refill.hotbarPotions() > 0;
+        boolean shouldHeal = mc.thePlayer.getHealth() <= 14;
+        boolean ruleShouldHeal = mc.thePlayer.getHealth() <= 12;
+        boolean mustHeal = mc.thePlayer.getHealth() <= 4;
+
+        if (!mustHeal && tickIndex - lastPearlTick <= 80) {
+            status = Status.ATTACK;
+            return;
+        }
+
+        if (mustHeal && canHeal) {
+            healing.startHealingSequence();
+            status = Status.HEAL;
+            mc.thePlayer.sendChatMessage("[Project L1psy] Must heal. HP: " + mc.thePlayer.getHealth());
+            return;
+        } else if (actionsAvailable) {
+            if (predPot && canHeal && shouldHeal) {
+                healing.startHealingSequence();
+                status = Status.HEAL;
+                return;
+            }
+        } else {        // rule-based fallback
+            if (canHeal & ruleShouldHeal) {
                 healing.startHealingSequence();
                 status = Status.HEAL;
             } else {
                 status = Status.ATTACK;
             }
             return;
+        }
+
+
+        boolean allowPearl = pearl.canUsePearl() && status == Status.ATTACK && utils.isHoldingSword();
+        boolean strongPearlRule = target.getHealth() < 8 || (
+                mc.thePlayer.getHealth() - target.getHealth() >= 4 & mc.thePlayer.getHealth() > 5)
+                ;
+        if (actions != null && actions.length >= 8) {
+            boolean predPearl = actions[6] == 1.0F;
+            float pearlProb = actions[7];
+//            if (predPearl) {
+//                if (allowPearl) {
+//                    status = Status.PEARL;
+//                    mc.thePlayer.sendChatMessage(String.format(
+//                            Locale.US,
+//                            "[Project L1psy] Pearl accepted prob=%.2f",
+//                            pearlProb
+//                    ));
+//                    return;
+//                } else {
+//                    mc.thePlayer.sendChatMessage(String.format(
+//                            Locale.US,
+//                            "[Project L1psy] Pearl rejected prob=%.2f",
+//                            pearlProb
+//                    ));
+//                }
+//            }
+
+            if (allowPearl) {
+//                if (strongPearlRule) {
+//                    if (pearlProb >= 0.25) {
+//                        status = Status.PEARL;
+//                        pearl.startPearlSequence();
+//                        mc.thePlayer.sendChatMessage(String.format(
+//                                Locale.US,
+//                                "[Project L1psy] Pearl accepted strong rule: prob=%.2f",
+//                                pearlProb
+//                        ));
+//                        return;
+//                    }
+//                }
+                if (predPearl) {
+                    status = Status.PEARL;
+                    pearl.startPearlSequence(target);
+//                    mc.thePlayer.sendChatMessage(String.format(
+//                            Locale.US,
+//                            "[Project L1psy] Pearl accepted prob=%.2f",
+//                            pearlProb
+//                    ));
+                    lastPearlTick = tickIndex;
+                    return;
+                } else {
+//                    mc.thePlayer.sendChatMessage(String.format(
+//                            Locale.US,
+//                            "[Project L1psy] Pearl rejected prob=%.2f",
+//                            pearlProb
+//                    ));
+                }
+//                mc.thePlayer.sendChatMessage(
+//                        String.format(
+//                                Locale.US,
+//                                "[Project L1psy] allowPearl prob=%.2f",
+//                                pearlProb
+//                        ));
+            } else {
+//                mc.thePlayer.sendChatMessage(String.format(
+//                        Locale.US,
+//                        "[Project L1psy] !allowPearl rejected prob=%.2f",
+//                        pearlProb
+//                ));
+            }
         }
 
         double dist = mc.thePlayer.getDistanceToEntity(target);
@@ -175,15 +307,18 @@ public class ProjectLipsy {
             }
         }
 
+        refillAmount = refill.getRefillAmount();
+        if (refillAmount > 0) {
+            status = Status.REFILL;
+            return;
+        }
+
         // If close or buffs are not needed, attack
         status = Status.ATTACK;
-        if (pearl.canThrowPearl() && ((this.mc.thePlayer.getHealth() - target.getHealth() >= 8) || (target.getHealth() < 5 && this.mc.thePlayer.getHealth() > 5))){
-            status = Status.PEARL;
-        }
     }
 
     private EntityPlayer findClosestPlayer() {
-//        if (mc.theWorld == null) return null;
+        if (mc.theWorld == null || mc.thePlayer == null) return null;
         return mc.theWorld.playerEntities.stream()
                 .filter(p -> p != mc.thePlayer)
                 .min(Comparator.comparingDouble(mc.thePlayer::getDistanceToEntity))

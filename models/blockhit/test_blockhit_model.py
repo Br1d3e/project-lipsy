@@ -30,7 +30,7 @@ except ModuleNotFoundError:
         print_class_distribution,
         get_X_Y
 )
-from models.window_dataset import WindowDataset
+from models.torch_dataset import TorchDataset
 from models.blockhit.blockhit_datasets import BlockhitDataset
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -64,7 +64,7 @@ def load_model(path, device):
         model_class = MODEL_CLASSES[model_class_name]
         model = model_class(
             input_dim=checkpoint_model_input_dim(model_class_name, checkpoint),
-            output_dim=checkpoint.get("output_dim", 3),
+            output_dim=checkpoint.get("output_dim", 2),
         )
         model.load_state_dict(checkpoint["model_state_dict"])
     else:
@@ -126,7 +126,7 @@ def print_metrics(y_true, y_pred, mask=None, name="all"):
     acc = np.mean(y_true.reshape(-1) == y_target.reshape(-1))
 
     criterion = nn.CrossEntropyLoss()
-    loss = criterion(torch.tensor(y_pred), torch.tensor(y_target).reshape(-1))
+    loss = criterion(torch.tensor(y_pred), torch.tensor(y_true).reshape(-1).long())
 
     ppl = np.exp(loss)
 
@@ -151,9 +151,9 @@ def evaluate_model():
         print(f"Skipping: missing model file {model_path}")
         return
 
-    blockhit_dataset = BlockhitDataset()
-    test_windows = blockhit_dataset.get_test_windows(seq_len=SEQ_LEN)
-    test_dataset = WindowDataset(test_windows)
+    blockhit_dataset = BlockhitDataset(use_cache=True, build_cache=False)
+    test_X, test_Y = blockhit_dataset.get_test_X_Y(seq_len=SEQ_LEN)
+    test_dataset = TorchDataset(test_X, test_Y)
     loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     device = get_device()
@@ -224,8 +224,8 @@ def pred_confidence(y_pred):
     return probs.max(axis=1)
 
 def print_confusion_matrix(y_true_blockhit, y_pred_blockhit):
-    true_cls = (y_true_blockhit).astype(int)
-    pred_cls = (y_pred_blockhit).astype(int)
+    true_cls = y_true_blockhit.reshape(-1).astype(int)
+    pred_cls = y_pred_blockhit.reshape(-1).astype(int)
 
     cm = np.zeros((2, 2), dtype=int)
 

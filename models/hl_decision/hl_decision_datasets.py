@@ -5,8 +5,6 @@ import pickle
 
 from models.datasets import Datasets
 from models.datasets import TRAIN_FOLDER
-# TRAIN_FOLDER = os.path.join(TRAIN_FOLDER, "session_1778405079341")
-TRAIN_FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/test/recordings/test_hl_classfier"
 
 FEATURES = [
     # self
@@ -85,7 +83,10 @@ FEATURES = [
 
 STATES = ["s_attack", "s_heal", "s_pearl", "s_speed", "s_eat", "s_refill"]
 DEFAULT_TRANSITION_CONTEXT = 20
+DEFAULT_AFTER_TRANSITION_CONTEXT = 20
+DEFAULT_ATTACK_SAMPLE_RATIO = 4.0
 TARGETS = {"attack": 0, "heal": 1, "pearl": 2, "speed": 3, "eat": 4, "refill": 5}
+RARE_LABELS = ["heal", "pearl", "speed", "eat", "refill"]
 FEATURE_DEFAULTS = {
     "ticksSinceLastAttack": 100000,
     "ticksSinceLastBlock": 100000,
@@ -130,9 +131,9 @@ class HLDecisionDataset:
             self.val_frames = self.load_pickle_cache("val")
             self.test_frames = self.load_pickle_cache("test")
         else:
-            self.train_rounds = self.datasets.get_train_data()
-            self.val_rounds = self.datasets.get_val_data()
-            self.test_rounds = self.datasets.get_test_data()
+            self.train_rounds = self.datasets.get_train_rounds()
+            self.val_rounds = self.datasets.get_val_rounds()
+            self.test_rounds = self.datasets.get_test_rounds()
 
             self.train_frames = self.concatenate_frames(self.train_rounds)
             self.val_frames = self.concatenate_frames(self.val_rounds)
@@ -235,7 +236,7 @@ class HLDecisionDataset:
             feature_mask_fn=None,
             target=None,
             target_mask_fn=None,
-        default_features=None
+            default_features=None
     ):
         if features is None:
             features = self.feature_list
@@ -266,6 +267,257 @@ class HLDecisionDataset:
             raise ValueError("No target specified")
 
         return feature_matrix[feature_mask], target_value[feature_mask]
+
+    def select_next_X_Y(
+            self,
+            frames: pd.DataFrame,
+            features=None,
+            target=None,
+            candidate_mask_fn=None,
+            input_mask_fn=None,
+            default_features=None,
+    ):
+        X, Y = self.select_seq_X_Y(
+            frames=frames,
+            features=features,
+            target=target,
+            seq_len=1,
+            input_mask_fn=input_mask_fn,
+            candidate_mask_fn=candidate_mask_fn,
+            default_features=default_features,
+        )
+        return X[:, 0, :], Y
+
+    def select_seq_X_Y(
+            self,
+            frames: pd.DataFrame,
+            features=None,
+            target=None,
+            seq_len=1,
+            input_mask_fn=None,
+            candidate_mask_fn=None,
+            target_mask_fn=None,
+            default_features=None,
+    ):
+        if features is None:
+            features = self.feature_list
+        if default_features is None:
+            default_features = FEATURE_DEFAULTS
+
+        if frames.empty:
+            feature_dim = len(features) if features is not None else 0
+            target_dim = 1
+            if isinstance(target, np.ndarray) and target.ndim > 1:
+                target_dim = target.shape[1]
+            return np.empty((0, seq_len, feature_dim), dtype=np.float32), np.empty((0, target_dim),
+                                                                                   dtype=np.float32)
+        if seq_len < 1:
+            raise ValueError(f"seq_len must be >= 1, got {seq_len}")
+
+        features_df = frames[features].copy() if features is not None else frames.copy()
+        features_df = features_df.fillna(default_features)
+
+        targets_value = np.zeros(len(features_df), dtype=np.float32)
+        if isinstance(target, int) or isinstance(target, float):
+            targets_value.fill(target)
+        elif isinstance(target, np.ndarray):
+            if target.shape[0] != len(features_df):
+                raise ValueError(f"Invalid target shape. Expected {len(features_df)}, got {target.shape[0]}.")
+            targets_value = target.astype(np.float32, copy=False)
+        elif callable(target_mask_fn):
+            targets_value = np.asarray(target_mask_fn(frames), dtype=np.float32)
+            if targets_value.shape[0] != len(features_df):
+                raise ValueError(f"Invalid target mask shape. Expected {len(features_df)}, got {targets_value.shape[0]}.")
+        else:
+            raise ValueError("No target specified")
+
+        if callable(candidate_mask_fn):
+            candidate_mask = np.asarray(candidate_mask_fn(frames), dtype=bool)
+        elif candidate_mask_fn is None:
+            candidate_mask = np.ones(len(frames), dtype=bool)
+        else:
+            candidate_mask = np.asarray(candidate_mask_fn, dtype=bool)
+        if candidate_mask.shape[0] != len(frames):
+            raise ValueError(f"Invalid candidate mask shape. Expected {len(frames)}, got {candidate_mask.shape[0]}")
+
+        input_valid_mask = np.ones(len(frames), dtype=bool)
+        if input_mask_fn is not None:
+            input_valid_mask = np.asarray(input_mask_fn(frames), dtype=bool)
+        if input_valid_mask.shape[0] != len(frames):
+            raise ValueError(f"Invalid input mask shape. Expected {len(frames)}, got {input_valid_mask.shape[0]}")
+
+        feature_matrix = features_df.to_numpy(np.float32)
+
+        X = []
+        Y = []
+
+        if "round_id" in frames.columns:
+            round_groups = frames.groupby(frames["round_id"], sort=False)
+        else:
+            round_groups = [(None, frames)]
+
+        for _, round_df in round_groups:
+            round_idx = frames.index.get_indexer(round_df.index)
+            if len(round_idx) < seq_len:
+                continue
+
+            round_candidate_mask = candidate_mask[round_idx]
+            for end in range(seq_len - 1, len(round_idx) - 1):
+                start = end - seq_len + 1
+
+                keep = round_candidate_mask[end]
+                if not keep:
+                    continue
+
+                frame_idx = round_idx[start:end + 1]
+                if not input_valid_mask[frame_idx].all():
+                    continue
+                # X is the current state window ending at tick t; Y is the state at tick t+1.
+                target_idx = round_idx[end + 1]
+                x = feature_matrix[frame_idx]
+                y = targets_value[target_idx]
+                if not np.isfinite(x).all() or not np.isfinite(y).all():
+                    continue
+                X.append(x)
+                Y.append(y)
+
+        feature_dim = feature_matrix.shape[1]
+        target_dim = 1 if targets_value.ndim == 1 else targets_value.shape[1]
+        if not X:
+            return np.empty((0, seq_len, feature_dim), dtype=np.float32), np.empty((0, target_dim),
+                                                                                   dtype=np.float32)
+
+        Y = np.asarray(Y, dtype=np.float32)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+        return np.asarray(X, dtype=np.float32), Y
+
+    def label_match_mask(self, frames, label_name=None, label_type=None, labels=None):
+        if labels is None:
+            if label_name is None:
+                labels = list(TARGETS.keys())
+            elif isinstance(label_name, (list, tuple, set)):
+                labels = list(label_name)
+            else:
+                labels = [label_name]
+
+        mask = frames["label"].isin(labels).to_numpy()
+        if label_type is not None:
+            if isinstance(label_type, (list, tuple, set)):
+                type_mask = frames["label_type"].isin(label_type).to_numpy()
+            else:
+                type_mask = (frames["label_type"] == label_type).to_numpy()
+            mask &= type_mask
+        return mask
+
+    def next_state_targets(self, frames, label_name=None, label_type=None):
+        if label_name is None:
+            target = np.full(len(frames), TARGETS["attack"], dtype=np.float32)
+            label_values = frames["label"].to_numpy()
+            for name, value in TARGETS.items():
+                target[label_values == name] = value
+        else:
+            target = self.label_match_mask(frames, label_name=label_name, label_type=label_type).astype(np.float32)
+
+        next_target = np.zeros(len(frames), dtype=np.float32)
+        for _, round_df in frames.groupby(frames["round_id"], sort=False):
+            round_idx = frames.index.get_indexer(round_df.index)
+            if len(round_idx) <= 1:
+                continue
+            next_target[round_idx[:-1]] = target[round_idx[1:]]
+        return next_target
+
+    def candidate_state_mask(
+            self,
+            frames,
+            label_name=None,
+            label_type=None,
+            rare_labels=None,
+            before_transition=DEFAULT_TRANSITION_CONTEXT,
+            after_transition=DEFAULT_AFTER_TRANSITION_CONTEXT,
+    ):
+        if rare_labels is None:
+            rare_labels = [label_name] if label_name is not None else RARE_LABELS
+        if isinstance(rare_labels, str):
+            rare_labels = [rare_labels]
+
+        rare_mask = self.label_match_mask(frames, label_name=rare_labels, label_type=label_type)
+
+        transition_near_mask = np.zeros(len(frames), dtype=bool)
+        if before_transition > 0 or after_transition > 0:
+            for _, round_df in frames.groupby(frames["round_id"], sort=False):
+                round_idx = frames.index.get_indexer(round_df.index)
+                ticks = round_df["recordingTickIndex"].to_numpy()
+                label_mask = self.label_match_mask(round_df, label_name=rare_labels, label_type=label_type)
+                label_starts = np.unique(round_df.loc[label_mask, "label_start"].to_numpy())
+                label_starts = label_starts[label_starts >= 0]
+
+                round_mask = np.zeros(len(round_df), dtype=bool)
+                for start in label_starts:
+                    if before_transition > 0:
+                        round_mask |= (ticks >= start - before_transition) & (ticks < start)
+                    if after_transition > 0:
+                        round_mask |= (ticks >= start) & (ticks < start + after_transition)
+
+                transition_near_mask[round_idx] = round_mask
+
+        attack_mask = (frames["label"] == "attack").to_numpy()
+        return rare_mask | transition_near_mask | attack_mask
+
+    def balance_by_target(
+            self,
+            X,
+            Y,
+            label_name=None,
+            attack_sample_ratio=DEFAULT_ATTACK_SAMPLE_RATIO,
+            positive_to_negative:float | None=None,
+            sample_mode="even",
+            msg=True,
+    ):
+        """Downsample the majority target class after X/Y have been shifted to t+1."""
+        if X.shape[0] != Y.shape[0]:
+            raise ValueError(f"X and Y must have the same dimension 0, got X:{X.shape!r} and Y:{Y.shape!r}.")
+        if X.shape[0] == 0:
+            return X, Y
+
+        target_values = np.asarray(Y).reshape(-1)
+        if label_name is None:
+            minority_mask = target_values != TARGETS["attack"]
+            majority_ratio = attack_sample_ratio
+            ratio_description = f"attack_to_rare={attack_sample_ratio:g}"
+        else:
+            minority_mask = target_values == 1
+            if positive_to_negative is None:
+                return X, Y
+            if positive_to_negative <= 0:
+                raise ValueError("positive_to_negative must be > 0 or None.")
+            majority_ratio = 1.0 / positive_to_negative
+            ratio_description = f"positive_to_negative={positive_to_negative:g}"
+
+        minority_X = X[minority_mask]
+        minority_Y = Y[minority_mask]
+        majority_X = X[~minority_mask]
+        majority_Y = Y[~minority_mask]
+        if minority_X.shape[0] == 0 or majority_X.shape[0] == 0:
+            return X, Y
+        desired_majority = min(
+            int(minority_X.shape[0] * majority_ratio),
+            majority_X.shape[0],
+        )
+        majority_X, majority_Y = self.sample_X_Y(
+            majority_X,
+            majority_Y,
+            desired_majority,
+            mode=sample_mode,
+        )
+        X, Y = self.concatenate_X_Y(minority_X, minority_Y, majority_X, majority_Y)
+        X, Y = self.shuffle_X_Y(X, Y)
+        if msg:
+            print(
+                f"balanced by next target ({ratio_description}): "
+                f"minority={minority_X.shape[0]} majority={majority_X.shape[0]}"
+            )
+        return X, Y
 
     def positive_prev_mask(self, frames, transition_context=DEFAULT_TRANSITION_CONTEXT, label_name=None, label_type=None):
         positive_prev_mask = np.zeros(len(frames), dtype=bool)  # global mask (frames,)
@@ -335,6 +587,16 @@ class HLDecisionDataset:
 
         return X[sample_idx], Y[sample_idx]
 
+    @staticmethod
+    def shuffle_X_Y(X: np.ndarray, Y: np.ndarray, seed=42):
+        if X.shape[0] != Y.shape[0]:
+            raise ValueError(f"X and Y must have the same dimension 0, got X:{X.shape!r} and Y:{Y.shape!r} instead.")
+        if X.shape[0] <= 1:
+            return X, Y
+        rng = np.random.default_rng(seed=seed)
+        idx = rng.permutation(X.shape[0])
+        return X[idx], Y[idx]
+
     def smart_sample(
             self,
             pos_X,
@@ -390,13 +652,16 @@ class HLDecisionDataset:
             print(f"negative_X: {negative_X.shape} | negative_Y: {negative_Y.shape}")
             print(f"total: {pos_X.shape[0] + negative_X.shape[0]}")
 
-        return self.concatenate_X_Y(pos_X, pos_Y, negative_X, negative_Y)
+        sampled_X, sampled_Y = self.concatenate_X_Y(pos_X, pos_Y, negative_X, negative_Y)
+        return self.shuffle_X_Y(sampled_X, sampled_Y)
 
 
     def get_sampled_X_Y(
             self,
             frames,
             transition_context=DEFAULT_TRANSITION_CONTEXT,
+            after_transition_context=DEFAULT_AFTER_TRANSITION_CONTEXT,
+            attack_sample_ratio=DEFAULT_ATTACK_SAMPLE_RATIO,
             label_name=None,
             label_type=None,
             hard_negative_mask=True,
@@ -411,59 +676,89 @@ class HLDecisionDataset:
             label_name = self.label_name
         if label_type is None:
             label_type = self.label_type
-        if label_name is None:
-            raise ValueError("label_name is required")
-
-        positive_mask = self.positive_prev_mask(frames, transition_context, label_name, label_type)
         valid_mask = np.asarray(self.is_valid_tick(frames), dtype=bool)
-        if callable(hard_negative_mask):
-            hard_negative_mask = np.asarray(hard_negative_mask(frames), dtype=bool)
-        else:
-            hard_negative_mask = np.asarray(hard_negative_mask, dtype=bool)
-        if callable(easy_negative_mask):
-            easy_negative_mask = np.asarray(easy_negative_mask(frames), dtype=bool)
-        else:
-            easy_negative_mask = np.asarray(easy_negative_mask, dtype=bool)
-
-        pos_X, pos_Y = self.select_X_Y(
+        candidate_mask = self.candidate_state_mask(
+            frames,
+            label_name=label_name,
+            label_type=label_type,
+            before_transition=transition_context,
+            after_transition=after_transition_context,
+        )
+        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        X, Y = self.select_next_X_Y(
             frames=frames,
             features=features,
-            feature_mask_fn=lambda f:
-                valid_mask &
-                positive_mask,
-            target=1
+            candidate_mask_fn=lambda f: valid_mask & candidate_mask,
+            target=targets,
         )
-        hard_X, hard_Y = self.select_X_Y(
-            frames,
-            features=features,
-            feature_mask_fn = lambda f:
-                valid_mask &
-                hard_negative_mask &
-                ~positive_mask,
-            target=0
-        )
-        easy_X, easy_Y = self.select_X_Y(
-            frames,
-            features=features,
-            feature_mask_fn=lambda f:
-                valid_mask &
-                easy_negative_mask &
-                ~positive_mask,
-            target=0
-        )
-        sampled_X, sampled_Y = self.smart_sample(
-            pos_X,
-            pos_Y,
-            hard_X,
-            hard_Y,
-            easy_X,
-            easy_Y,
+        X, Y = self.balance_by_target(
+            X,
+            Y,
+            label_name=label_name,
+            attack_sample_ratio=attack_sample_ratio,
             positive_to_negative=positive_to_negative,
-            prefer_hard_negative=prefer_hard_negative,
-            mode=sample_mode,
-            msg=msg
+            sample_mode=sample_mode,
+            msg=msg,
         )
-        return sampled_X, sampled_Y
+        if msg:
+            print(f"sampled next-state X/Y: X={X.shape} Y={Y.shape}")
+            self.target_distribution(Y)
+        return X, Y
+
+    def get_seq_sampled_X_Y(
+            self,
+            frames,
+            seq_len=DEFAULT_TRANSITION_CONTEXT,
+            transition_context=DEFAULT_TRANSITION_CONTEXT,
+            after_transition_context=DEFAULT_AFTER_TRANSITION_CONTEXT,
+            attack_sample_ratio=DEFAULT_ATTACK_SAMPLE_RATIO,
+            label_name=None,
+            label_type=None,
+            hard_negative_mask=True,
+            easy_negative_mask=True,
+            positive_to_negative=0.5,
+            prefer_hard_negative=False,
+            sample_mode="even",
+            features=None,
+            msg=True,
+    ):
+        if label_name is None:
+            label_name = self.label_name
+        if label_type is None:
+            label_type = self.label_type
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        valid_mask = np.asarray(self.is_valid_tick(frames), dtype=bool)
+        candidate_mask = self.candidate_state_mask(
+            frames,
+            label_name=label_name,
+            label_type=label_type,
+            before_transition=transition_context,
+            after_transition=after_transition_context,
+        )
+        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        X, Y = self.select_seq_X_Y(
+            frames=frames,
+            features=features,
+            seq_len=seq_len,
+            input_mask_fn=lambda f: valid_mask,
+            candidate_mask_fn=lambda f: candidate_mask,
+            target=targets,
+        )
+        X, Y = self.balance_by_target(
+            X,
+            Y,
+            label_name=label_name,
+            attack_sample_ratio=attack_sample_ratio,
+            positive_to_negative=positive_to_negative,
+            sample_mode=sample_mode,
+            msg=msg,
+        )
+        if msg:
+            print(f"sampled next-state seq X/Y: X={X.shape} Y={Y.shape}")
+            self.target_distribution(Y)
+        return X, Y
+
 
     def get_realistic_X_Y(
             self,
@@ -477,12 +772,39 @@ class HLDecisionDataset:
             label_name = self.label_name
         if label_type is None:
             label_type = self.label_type
-        positive_mask = self.positive_prev_mask(frames, transition_context, label_name, label_type)
-        targets = np.asarray(positive_mask, dtype=np.float32)
-        X, Y = self.select_X_Y(
+        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        X, Y = self.select_next_X_Y(
             frames=frames,
             features=features,
-            feature_mask_fn=lambda f: self.is_valid_tick(frames),
+            candidate_mask_fn=lambda f: self.is_valid_tick(frames),
+            target=targets,
+        )
+        return X, Y
+
+    def get_seq_realistic_X_Y(
+            self,
+            frames,
+            seq_len=DEFAULT_TRANSITION_CONTEXT,
+            transition_context=DEFAULT_TRANSITION_CONTEXT,
+            label_name=None,
+            label_type=None,
+            features=None,
+    ):
+        if label_name is None:
+            label_name = self.label_name
+        if label_type is None:
+            label_type = self.label_type
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        # if seq_len > transition_context:
+            # print(f"Warning: seq_len={seq_len} is greater than transition_context={transition_context}.")
+
+        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        X, Y = self.select_seq_X_Y(
+            frames=frames,
+            features=features,
+            seq_len=seq_len,
+            input_mask_fn=lambda f: self.is_valid_tick(frames),
             target=targets,
         )
         return X, Y
@@ -490,6 +812,8 @@ class HLDecisionDataset:
     def get_train_X_Y(
             self,
             transition_context=DEFAULT_TRANSITION_CONTEXT,
+            after_transition_context=DEFAULT_AFTER_TRANSITION_CONTEXT,
+            attack_sample_ratio=DEFAULT_ATTACK_SAMPLE_RATIO,
             label_name=None,
             label_type=None,
             hard_negative_mask=True,
@@ -501,9 +825,30 @@ class HLDecisionDataset:
             seq_len=1,
             msg=True,
     ):
-        return self.get_sampled_X_Y(
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        if seq_len == 1:
+            return self.get_sampled_X_Y(
+                self.train_frames,
+                transition_context=transition_context,
+                after_transition_context=after_transition_context,
+                attack_sample_ratio=attack_sample_ratio,
+                label_name=label_name,
+                label_type=label_type,
+                hard_negative_mask=hard_negative_mask,
+                easy_negative_mask=easy_negative_mask,
+                positive_to_negative=positive_to_negative,
+                prefer_hard_negative=prefer_hard_negative,
+                sample_mode=sample_mode,
+                features=features,
+                msg=msg,
+            )
+        return self.get_seq_sampled_X_Y(
             self.train_frames,
+            seq_len=seq_len,
             transition_context=transition_context,
+            after_transition_context=after_transition_context,
+            attack_sample_ratio=attack_sample_ratio,
             label_name=label_name,
             label_type=label_type,
             hard_negative_mask=hard_negative_mask,
@@ -515,10 +860,11 @@ class HLDecisionDataset:
             msg=msg,
         )
 
-
     def get_val_X_Y(
             self,
             transition_context=DEFAULT_TRANSITION_CONTEXT,
+            after_transition_context=DEFAULT_AFTER_TRANSITION_CONTEXT,
+            attack_sample_ratio=DEFAULT_ATTACK_SAMPLE_RATIO,
             label_name=None,
             label_type=None,
             hard_negative_mask=True,
@@ -530,9 +876,30 @@ class HLDecisionDataset:
             seq_len=1,
             msg=True,
     ):
-        return self.get_sampled_X_Y(
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        if seq_len == 1:
+            return self.get_sampled_X_Y(
+                self.val_frames,
+                transition_context=transition_context,
+                after_transition_context=after_transition_context,
+                attack_sample_ratio=attack_sample_ratio,
+                label_name=label_name,
+                label_type=label_type,
+                hard_negative_mask=hard_negative_mask,
+                easy_negative_mask=easy_negative_mask,
+                positive_to_negative=positive_to_negative,
+                prefer_hard_negative=prefer_hard_negative,
+                sample_mode=sample_mode,
+                features=features,
+                msg=msg,
+            )
+        return self.get_seq_sampled_X_Y(
             self.val_frames,
+            seq_len=seq_len,
             transition_context=transition_context,
+            after_transition_context=after_transition_context,
+            attack_sample_ratio=attack_sample_ratio,
             label_name=label_name,
             label_type=label_type,
             hard_negative_mask=hard_negative_mask,
@@ -552,8 +919,19 @@ class HLDecisionDataset:
             features=None,
             seq_len=1,
     ):
-        return self.get_realistic_X_Y(
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1.")
+        if seq_len == 1:
+            return self.get_realistic_X_Y(
+                self.test_frames,
+                transition_context=transition_context,
+                label_name=label_name,
+                label_type=label_type,
+                features=features
+            )
+        return self.get_seq_realistic_X_Y(
             self.test_frames,
+            seq_len=seq_len,
             transition_context=transition_context,
             label_name=label_name,
             label_type=label_type,
@@ -577,3 +955,12 @@ class HLDecisionDataset:
         result = {int(v): int(c) for v, c in zip(values, counts)}
         print(f"target_distribution: {result}")
         return result
+
+
+if __name__ == "__main__":
+    ds = HLDecisionDataset(label_name="pearl", label_type=["tryhard", "side"], use_cache=True, build_cache=False)
+    train_X, train_Y = ds.get_train_X_Y(transition_context=20, seq_len=40)
+    test_X, test_Y = ds.get_test_X_Y(transition_context=20, seq_len=40)
+
+    print(train_X.shape, train_Y.shape)
+    print(test_X.shape, test_Y.shape)
