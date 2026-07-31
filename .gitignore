@@ -53,6 +53,7 @@ recorder-1.7.10/recordings
 *.avi
 *.mkv
 *.log
+*.pt
 
 # Keep small dataset samples if they exist
 !datasets/samples/

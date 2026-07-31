@@ -126,6 +126,8 @@ class PearlTriggerLSTM(nn.Module):
         return self.fc(out[:, -1, :])
 
 
+
+
 class TrainPearlTorchModel(TrainTorchModel):
     def __init__(self, train_dataset, val_dataset):
         self.train_dataset = train_dataset

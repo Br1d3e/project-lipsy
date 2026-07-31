@@ -5,6 +5,10 @@ import pickle
 
 from models.datasets import Datasets
 from models.datasets import TRAIN_FOLDER
+from models.torch_dataset import TorchDataset
+
+from torch.utils.data import DataLoader
+import torch
 
 FEATURES = [
     # self
@@ -85,6 +89,15 @@ STATES = ["s_attack", "s_heal", "s_pearl", "s_speed", "s_eat", "s_refill"]
 DEFAULT_TRANSITION_CONTEXT = 20
 DEFAULT_AFTER_TRANSITION_CONTEXT = 20
 DEFAULT_ATTACK_SAMPLE_RATIO = 4.0
+DEFAULT_TARGETS_DISTRIBUTION = [
+    0.55,  # attack
+    0.15,  # heal
+    0.10,  # pearl
+    0.08,  # speed
+    0.08,  # eat
+    0.04,  # refill
+]
+LABELS = ["attack", "heal", "pearl", "speed", "eat", "refill"]
 TARGETS = {"attack": 0, "heal": 1, "pearl": 2, "speed": 3, "eat": 4, "refill": 5}
 RARE_LABELS = ["heal", "pearl", "speed", "eat", "refill"]
 FEATURE_DEFAULTS = {
@@ -228,6 +241,21 @@ class HLDecisionDataset:
 
     def get_frames(self):
         return self.train_frames, self.val_frames, self.test_frames
+
+    def print_label_distribution(self, split="train"):
+        if split == "train":
+            frames = self.train_frames
+        elif split == "val":
+            frames = self.val_frames
+        elif split == "test":
+            frames = self.test_frames
+        else:
+            raise ValueError(f"Unknown split {split!r}")
+        frames = frames[self.is_valid_tick(frames)]
+        print(f"{split}: {len(frames)} frames")
+        for label in LABELS:
+            size = np.sum(self.label_match_mask(frames, label))
+            print(f"{label}: {size} positives. ({size / len(frames) * 100:.2f}%)")
 
     def select_X_Y(
             self,
@@ -671,6 +699,7 @@ class HLDecisionDataset:
             sample_mode="even",
             features=None,
             msg=True,
+            balance_targets=True,
     ):
         if label_name is None:
             label_name = self.label_name
@@ -691,15 +720,16 @@ class HLDecisionDataset:
             candidate_mask_fn=lambda f: valid_mask & candidate_mask,
             target=targets,
         )
-        X, Y = self.balance_by_target(
-            X,
-            Y,
-            label_name=label_name,
-            attack_sample_ratio=attack_sample_ratio,
-            positive_to_negative=positive_to_negative,
-            sample_mode=sample_mode,
-            msg=msg,
-        )
+        if balance_targets:
+            X, Y = self.balance_by_target(
+                X,
+                Y,
+                label_name=label_name,
+                attack_sample_ratio=attack_sample_ratio,
+                positive_to_negative=positive_to_negative,
+                sample_mode=sample_mode,
+                msg=msg,
+            )
         if msg:
             print(f"sampled next-state X/Y: X={X.shape} Y={Y.shape}")
             self.target_distribution(Y)
@@ -721,6 +751,7 @@ class HLDecisionDataset:
             sample_mode="even",
             features=None,
             msg=True,
+            balance_targets=True,
     ):
         if label_name is None:
             label_name = self.label_name
@@ -745,15 +776,16 @@ class HLDecisionDataset:
             candidate_mask_fn=lambda f: candidate_mask,
             target=targets,
         )
-        X, Y = self.balance_by_target(
-            X,
-            Y,
-            label_name=label_name,
-            attack_sample_ratio=attack_sample_ratio,
-            positive_to_negative=positive_to_negative,
-            sample_mode=sample_mode,
-            msg=msg,
-        )
+        if balance_targets:
+            X, Y = self.balance_by_target(
+                X,
+                Y,
+                label_name=label_name,
+                attack_sample_ratio=attack_sample_ratio,
+                positive_to_negative=positive_to_negative,
+                sample_mode=sample_mode,
+                msg=msg,
+            )
         if msg:
             print(f"sampled next-state seq X/Y: X={X.shape} Y={Y.shape}")
             self.target_distribution(Y)
@@ -824,11 +856,13 @@ class HLDecisionDataset:
             features=None,
             seq_len=1,
             msg=True,
+            return_sample_weights=False,
+            expected_distribution=None,
     ):
         if seq_len < 1:
             raise ValueError("seq_len must be >= 1.")
         if seq_len == 1:
-            return self.get_sampled_X_Y(
+            X, Y = self.get_sampled_X_Y(
                 self.train_frames,
                 transition_context=transition_context,
                 after_transition_context=after_transition_context,
@@ -842,23 +876,35 @@ class HLDecisionDataset:
                 sample_mode=sample_mode,
                 features=features,
                 msg=msg,
+                balance_targets=False,
             )
-        return self.get_seq_sampled_X_Y(
-            self.train_frames,
-            seq_len=seq_len,
-            transition_context=transition_context,
-            after_transition_context=after_transition_context,
-            attack_sample_ratio=attack_sample_ratio,
-            label_name=label_name,
-            label_type=label_type,
-            hard_negative_mask=hard_negative_mask,
-            easy_negative_mask=easy_negative_mask,
-            positive_to_negative=positive_to_negative,
-            prefer_hard_negative=prefer_hard_negative,
-            sample_mode=sample_mode,
-            features=features,
-            msg=msg,
-        )
+        else:
+            X, Y = self.get_seq_sampled_X_Y(
+                self.train_frames,
+                seq_len=seq_len,
+                transition_context=transition_context,
+                after_transition_context=after_transition_context,
+                attack_sample_ratio=attack_sample_ratio,
+                label_name=label_name,
+                label_type=label_type,
+                hard_negative_mask=hard_negative_mask,
+                easy_negative_mask=easy_negative_mask,
+                positive_to_negative=positive_to_negative,
+                prefer_hard_negative=prefer_hard_negative,
+                sample_mode=sample_mode,
+                features=features,
+                msg=msg,
+                balance_targets=False,
+            )
+
+        if return_sample_weights:
+            sample_weights = self.get_sample_weights(
+                Y,
+                expected_distribution=expected_distribution,
+                msg=msg,
+            )
+            return X, Y, sample_weights
+        return X, Y
 
     def get_val_X_Y(
             self,
@@ -947,20 +993,88 @@ class HLDecisionDataset:
         return frames["targetExists"] == True
 
     @staticmethod
+    def labels_count(Y, num_labels=None):
+        """Count valid shifted target ticks represented by Y."""
+        target_values = np.asarray(Y).reshape(-1)
+        if target_values.size == 0:
+            if num_labels is None:
+                num_labels = len(LABELS)
+            return np.zeros(num_labels, dtype=np.int64)
+        if not np.isfinite(target_values).all() or not np.equal(target_values, np.floor(target_values)).all():
+            raise ValueError("HL targets must contain finite integer class ids.")
+
+        target_values = target_values.astype(np.int64)
+        if np.any(target_values < 0):
+            raise ValueError("HL target class ids must be non-negative.")
+        if num_labels is None:
+            num_labels = max(len(LABELS), int(target_values.max()) + 1)
+        if np.any(target_values >= num_labels):
+            raise ValueError(f"HL target class id exceeds configured class count {num_labels}.")
+        return np.bincount(target_values, minlength=num_labels)
+
+    @classmethod
+    def labels_distribution(cls, Y, num_labels=None):
+        counts = cls.labels_count(Y, num_labels=num_labels)
+        total = counts.sum()
+        if total == 0:
+            return np.zeros(counts.shape, dtype=np.float64)
+        return counts.astype(np.float64) / total
+
+    @classmethod
+    def get_sample_weights(cls, Y, expected_distribution=None, msg=False):
+        if expected_distribution is None:
+            expected_distribution = DEFAULT_TARGETS_DISTRIBUTION
+        expected = np.asarray(expected_distribution, dtype=np.float64)
+        if expected.ndim != 1 or expected.size == 0 or np.any(expected < 0):
+            raise ValueError("expected_distribution must contain non-negative class probabilities.")
+        if expected.sum() <= 0:
+            raise ValueError("expected_distribution must have a positive sum.")
+        expected = expected / expected.sum()
+
+        counts = cls.labels_count(Y, num_labels=len(expected))
+        actual = cls.labels_distribution(Y, num_labels=len(expected))
+        missing = (counts == 0) & (expected > 0)
+        if np.any(missing):
+            missing_labels = np.flatnonzero(missing).tolist()
+            raise ValueError(f"Cannot sample requested target distribution; classes {missing_labels} have no samples.")
+
+        class_weights = np.divide(expected, actual, out=np.zeros_like(expected), where=actual > 0)
+        target_values = np.asarray(Y).reshape(-1).astype(np.int64)
+        sample_weights = class_weights[target_values]
+        if msg:
+            print(f"target counts: {counts.tolist()}")
+            print(f"target actual distribution: {actual.tolist()}")
+            print(f"target expected distribution: {expected.tolist()}")
+            print(f"target class weights: {class_weights.tolist()}")
+        return sample_weights
+
+    @staticmethod
     def target_distribution(X, Y=None):
         if Y is None:
             Y = X
         Y = np.asarray(Y).reshape(-1)
         values, counts = np.unique(Y.astype(int), return_counts=True)
-        result = {int(v): int(c) for v, c in zip(values, counts)}
+        result = {int(v): f"{int(c)} ({float(c / len(X) * 100):.2f}%)" for v, c in zip(values, counts)}
         print(f"target_distribution: {result}")
         return result
 
 
 if __name__ == "__main__":
-    ds = HLDecisionDataset(label_name="pearl", label_type=["tryhard", "side"], use_cache=True, build_cache=False)
-    train_X, train_Y = ds.get_train_X_Y(transition_context=20, seq_len=40)
+    ds = HLDecisionDataset(label_name=None, label_type=None, use_cache=True, build_cache=False)
+
+    ds.print_label_distribution("train")
+    ds.print_label_distribution("val")
+    ds.print_label_distribution("test")
+
+    train_X, train_Y = ds.get_train_X_Y(transition_context=20, seq_len=40, attack_sample_ratio=3.0)
     test_X, test_Y = ds.get_test_X_Y(transition_context=20, seq_len=40)
 
     print(train_X.shape, train_Y.shape)
     print(test_X.shape, test_Y.shape)
+
+    train_dataset = TorchDataset(train_X, train_Y)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+    for xb, yb in train_loader:
+        print(xb.shape, yb.shape)
+        break
