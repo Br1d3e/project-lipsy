@@ -25,7 +25,6 @@ public class TargetInventoryTracker {
 
     private int targetPotions;
     private int targetPearls;
-    private int trackedTargetId = -1;
     private final Set<Integer> seenTargetPotionEntityIds = new HashSet<Integer>();
     private final Set<Integer> seenTargetPearlEntityIds = new HashSet<Integer>();
 
@@ -38,13 +37,13 @@ public class TargetInventoryTracker {
     public void reset() {
         targetPotions = TARGET_POTIONS_DEFAULT;
         targetPearls = TARGET_PEARLS_DEFAULT;
-        trackedTargetId = -1;
         seenTargetPotionEntityIds.clear();
         seenTargetPearlEntityIds.clear();
     }
 
-    public void trackHealthPotions(EntityPlayer target) {
-        if (!ensureTarget(target) || mc.theWorld == null) return;
+    public boolean trackHealthPotions(EntityPlayer target) {
+        if (target == null || mc.theWorld == null) return false;
+        boolean detectedThrow = false;
 
         for (Object entityObject : mc.theWorld.loadedEntityList) {
             if (!(entityObject instanceof EntityPotion)) continue;
@@ -55,14 +54,16 @@ public class TargetInventoryTracker {
             if (!isTargetHealingPotion(potion, target)) continue;
 
             seenTargetPotionEntityIds.add(potionId);
+            detectedThrow = true;
             if (targetPotions > 0) {
                 targetPotions--;
             }
         }
+        return detectedThrow;
     }
 
     public void trackPearls(EntityPlayer target) {
-        if (!ensureTarget(target) || mc.theWorld == null) return;
+        if (target == null || mc.theWorld == null) return;
 
         for (Object entityObject : mc.theWorld.loadedEntityList) {
             if (!(entityObject instanceof EntityEnderPearl)) continue;
@@ -85,26 +86,6 @@ public class TargetInventoryTracker {
 
     public int getTargetPearls() {
         return targetPearls;
-    }
-
-    private boolean ensureTarget(EntityPlayer target) {
-        if (target == null) {
-            trackedTargetId = -1;
-            seenTargetPotionEntityIds.clear();
-            seenTargetPearlEntityIds.clear();
-            return false;
-        }
-
-        int targetId = target.getEntityId();
-        if (targetId != trackedTargetId) {
-            targetPotions = TARGET_POTIONS_DEFAULT;
-            targetPearls = TARGET_PEARLS_DEFAULT;
-            trackedTargetId = targetId;
-            seenTargetPotionEntityIds.clear();
-            seenTargetPearlEntityIds.clear();
-        }
-
-        return true;
     }
 
     private boolean isTargetHealingPotion(EntityPotion potion, EntityPlayer target) {

@@ -1,14 +1,21 @@
 package com.bot.recorder;
 
+import com.bot.recorder.features.CombatHistoryTracker;
+import com.bot.recorder.features.TargetMovementTracker;
+import com.bot.recorder.features.TargetPlaystyleTracker;
+import com.bot.recorder.features.RecorderFeatureConfig;
 import com.bot.recorder.recordWriter.JsonLineBuilder;
 import com.bot.recorder.recordWriter.RecordWriter;
 import com.bot.recorder.targetTracker.TargetFoodTracker;
 import com.bot.recorder.targetTracker.TargetHpTracker;
+import com.bot.recorder.targetTracker.TargetHitTracker;
+import com.bot.recorder.targetTracker.PearlCooldownTracker;
 import com.bot.recorder.targetTracker.TargetInventoryTracker;
 import cpw.mods.fml.client.registry.ClientRegistry;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
 import cpw.mods.fml.common.event.FMLInitializationEvent;
+import cpw.mods.fml.common.event.FMLPreInitializationEvent;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.InputEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
@@ -26,6 +33,8 @@ import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
 import net.minecraft.network.play.client.C09PacketHeldItemChange;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
+import net.minecraft.network.play.server.S08PacketPlayerPosLook;
+import net.minecraft.network.play.server.S18PacketEntityTeleport;
 import net.minecraft.network.play.server.S13PacketDestroyEntities;
 import net.minecraft.network.play.server.S28PacketEffect;
 import net.minecraft.potion.Potion;
@@ -37,11 +46,11 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
-@Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "2.1")
+@Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "3.0")
 public class Recorder {
 
     private final Minecraft mc = Minecraft.getMinecraft();
-    private static final String RECORDER_VERSION = "v2";
+    private static final String RECORDER_VERSION = "v5";
     private static final int PEARL_COOLDOWN_TICKS = 320;
     private static final int WALL_CHECK_DISTANCE = 5;
     private static final int INVENTORY_SAMPLE_INTERVAL_TICKS = 5;
@@ -55,7 +64,18 @@ public class Recorder {
         }
     });
     private final ItemsHandler itemsHandler = new ItemsHandler(mc);
+    private final RecorderFeatureConfig featureConfig = new RecorderFeatureConfig();
+    private CombatHistoryTracker combatHistory = new CombatHistoryTracker(0.95D, 60);
+    private final TargetMovementTracker targetMovement = new TargetMovementTracker();
+    private final TargetPlaystyleTracker targetPlaystyle = new TargetPlaystyleTracker();
+    private Float previousSelfHp;
+    private final TargetHitTracker targetHitTracker = new TargetHitTracker();
     private final TargetHpTracker targetHpTracker = new TargetHpTracker(mc, itemsHandler, new TargetHpTracker.EventSink() {
+        public void onTargetHealed(int targetEntityId) {
+            targetHitTracker.recordHeal(targetEntityId);
+            combatHistory.targetHealed(recordingTickIndex);
+        }
+
         public void writeEvent(String type, JsonLineBuilder details) {
             Recorder.this.writeEvent(type, details);
         }
@@ -90,6 +110,11 @@ public class Recorder {
         }
     });
     private KeyBinding recorderGuiKey;
+    private KeyBinding nextRoundKey;
+    private int recorderRoundId = 0;
+    private UUID roundTargetUuid;
+    private final PearlCooldownTracker selfPearlTracker = new PearlCooldownTracker();
+    private boolean pendingSelfPearlUse;
     private RecorderGui recorderOverlay;
 
     // === record state ===
@@ -155,12 +180,20 @@ public class Recorder {
     private int comboTrackedTargetId = -1;
 
     @Mod.EventHandler
+    public void preInit(FMLPreInitializationEvent event) {
+        featureConfig.load(event.getSuggestedConfigurationFile());
+        combatHistory = new CombatHistoryTracker(featureConfig.hitPressureDecay, featureConfig.combatHistoryTicks);
+    }
+
+    @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
         System.out.println("[Lipsy] Recorder initialized.");
         if (!ROOT_DIR.exists()) ROOT_DIR.mkdirs();
 
         recorderGuiKey = new KeyBinding("Recorder GUI", Keyboard.KEY_RSHIFT, "Project Lipsy");
         ClientRegistry.registerKeyBinding(recorderGuiKey);
+        nextRoundKey = new KeyBinding("Next recorder round", Keyboard.KEY_BACK, "Project Lipsy");
+        ClientRegistry.registerKeyBinding(nextRoundKey);
         recorderOverlay = new RecorderGui(this);
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(recorderOverlay);
@@ -168,33 +201,64 @@ public class Recorder {
     }
 
     @SubscribeEvent
-    public void onKeyInput(InputEvent.KeyInputEvent event) {
+    public synchronized void onKeyInput(InputEvent.KeyInputEvent event) {
+        if (nextRoundKey.isPressed() && recording) {
+            recorderRoundId++;
+            resetRoundState();
+            writeEvent("ROUND_START", detailsBuilder().field("source", "hotkey"));
+            sendMessage("Recorder round " + recorderRoundId + " started; tracking state cleared.");
+        }
         if (recorderGuiKey.isPressed()) {
             mc.displayGuiScreen(new RecorderGui(this));
         }
     }
 
     @SubscribeEvent
-    public void onTick(TickEvent.ClientTickEvent e) {
+    public synchronized void onTick(TickEvent.ClientTickEvent e) {
         if (e.phase != TickEvent.Phase.END) return;
         installPacketHook();
         if (!recording) return;
-        if (mc.thePlayer == null) return;
+        if (mc.thePlayer == null) {
+            clearTargetObservation();
+            previousSelfHp = null;
+            return;
+        }
 
         EntityPlayer target = findClosestPlayer();
         int currentTick = recordingTickIndex;
+        combatHistory.advance(currentTick);
+        float selfHp = mc.thePlayer.getHealth();
+        if (previousSelfHp != null && selfHp > previousSelfHp) combatHistory.selfHealed(currentTick);
+        previousSelfHp = selfHp;
+        if (target != null) {
+            targetMovement.update(currentTick, target.getEntityId(), mc.thePlayer.posX, mc.thePlayer.posZ,
+                    target.posX, target.posZ, target.rotationYaw);
+        }
+        targetHitTracker.updateTarget(target == null ? -1 : target.getEntityId());
         targetHpTracker.updateTargetState(target, currentTick);
         targetFoodTracker.updateTargetState(target, currentTick);
         updateComboTargetState(target);
 
         if (target != null) {
             updateCombos(target);
+        } else {
+            clearTargetObservation();
         }
 
         updateInventoryCacheIfNeeded(currentTick);
         updateSpatialCacheIfNeeded(currentTick);
         targetHpTracker.updateTargetPotionState(target, currentTick);
-        targetInventoryTracker.trackHealthPotions(target);
+        if (targetInventoryTracker.trackHealthPotions(target)) {
+            TargetPlaystyleTracker.HealEpisode episode = targetPlaystyle.healingPotionThrown(currentTick);
+            if (episode != null) {
+                writeEvent("TARGET_HEAL_EPISODE_SAMPLE", detailsBuilder()
+                        .field("targetEntityId", target.getEntityId())
+                        .field("hitsBeforeHealing", episode.hitsBeforeHealing)
+                        .field("completeObservation", episode.hitsBeforeHealing != null)
+                        .field("tick", currentTick));
+            }
+            targetHitTracker.recordHeal(target.getEntityId());
+        }
         targetInventoryTracker.trackPearls(target);
         targetFoodTracker.updateMovementExhaustion(target);
         targetFoodTracker.updateFoodUse(target, target == null ? null : target.getHeldItem(),
@@ -225,18 +289,19 @@ public class Recorder {
             lastSpeedTick = currentTick;
         }
 
-        if (itemsHandler.isPearl(heldItem) && useItemStarted && pearlCooldownTicksRemaining <= 0) {
+        boolean pearlUseAttempt = pendingSelfPearlUse || (itemsHandler.isPearl(heldItem) && useItemStarted);
+        pendingSelfPearlUse = false;
+        if (selfPearlTracker.update(pearlUseAttempt, itemsHandler.countPearls(), PEARL_COOLDOWN_TICKS)) {
             lastPearlTick = currentTick;
-            pearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
-        } else if (pearlCooldownTicksRemaining > 0) {
-            pearlCooldownTicksRemaining--;
+            writeEvent("PEARL_THROW", detailsBuilder().field("source", "use_or_inventory_decrease"));
         }
+        pearlCooldownTicksRemaining = selfPearlTracker.getRemaining();
 
         if (itemsHandler.isSword(heldItem) && useItemStarted) {
             lastBlockTick = currentTick;
         }
 
-        boolean enemyPearl = updateEnemyPearlState(target, currentTick);
+        boolean targetPearling = updateEnemyPearlState(target, currentTick);
         previousUseItemPressed = useItemPressed;
         previousAttackPressed = attackPressed;
 
@@ -254,7 +319,6 @@ public class Recorder {
         Double targetDistance = null;
         Double yawDiffToTarget = null;
         Double pitchDiffToTarget = null;
-        Double hpDiffRaw = null;
         Float targetYawVel = null;
         Float targetPitchVel = null;
 
@@ -269,7 +333,6 @@ public class Recorder {
             double targetAimPitch = -Math.toDegrees(Math.atan2(targetRelY, distanceXZ));
             yawDiffToTarget = (double) MathHelper.wrapAngleTo180_float((float) targetAimYaw - mc.thePlayer.rotationYaw);
             pitchDiffToTarget = (double) MathHelper.wrapAngleTo180_float((float) targetAimPitch - mc.thePlayer.rotationPitch);
-            hpDiffRaw = (double) (mc.thePlayer.getHealth() - target.getHealth());
 
             Float previousTargetYaw = previousTargetYawById.get(targetId);
             Float previousTargetPitch = previousTargetPitchById.get(targetId);
@@ -282,6 +345,7 @@ public class Recorder {
         Entity crosshairEntity = getMouseOverEntity();
 
         JsonLineBuilder frame = frameBuilder.reset();
+        frame.field("recorderRoundId", recorderRoundId);
         frame.field("recordingTickIndex", recordingTickIndex++);
         frame.field("timeMs", time);
         frame.field("worldTick", getWorldTick());
@@ -304,6 +368,7 @@ public class Recorder {
         frame.field("myMoveStrafing", mc.thePlayer.moveStrafing);
         frame.field("mySwingProgress", mc.thePlayer.swingProgress);
         frame.field("myUsingItem", mc.thePlayer.isUsingItem());
+        frame.field("myItemUseTicks", mc.thePlayer.isUsingItem() ? mc.thePlayer.getItemInUseDuration() : 0);
         frame.field("myHeldItem", itemsHandler.getDisplayName(mc.thePlayer.getHeldItem()));
         frame.field("myHeldItemType", itemsHandler.getHeldItemType(mc.thePlayer));
         frame.field("myBlockingSword", itemsHandler.isSword(mc.thePlayer.getHeldItem()) && mc.thePlayer.isUsingItem());
@@ -313,12 +378,13 @@ public class Recorder {
         frame.field("myCombo", myCombo);
         frame.field("targetCombo", targetCombo);
         frame.field("pearlCooldownTicksRemaining", pearlCooldownTicksRemaining);
-        frame.field("enemyPearlAvailable", enemyPearl);
+        frame.field("enemyPearlAvailable", enemyPearlCooldownTicksRemaining == 0);
         frame.field("enemyPearlCooldownTicksRemaining", enemyPearlCooldownTicksRemaining);
         frame.field("inInventory", mc.currentScreen instanceof GuiInventory);
         frame.field("selectedSlot", mc.thePlayer.inventory.currentItem);
         frame.field("hotbar", cachedHotbar);
         frame.field("hotbarHealthPotions", cachedHotbarPotions);
+        frame.field("refillableHealthPotions", Math.max(0, cachedInventoryHealthPotions - cachedHotbarPotions));
         frame.field("inventoryFood", cachedInventoryFood);
         frame.field("inventorySpeedPotions", cachedInventorySpeedPotions);
         frame.field("inventoryHealthPotions", cachedInventoryHealthPotions);
@@ -360,6 +426,24 @@ public class Recorder {
         frame.field("targetDeltaYaw", targetYawVel);
         frame.field("targetDeltaPitch", targetPitchVel);
         frame.field("targetHpRaw", targetExists ? target.getHealth() : null);
+        frame.field("hitsBeforeTargetHeals", targetExists ? targetHitTracker.getHits() : null);
+        frame.field("meanHitsBeforeTargetHeals", targetPlaystyle.getMeanHealHits());
+        frame.field("medianHitsBeforeTargetHeals", targetPlaystyle.getMedianHealHits());
+        frame.field("targetHealEpisodeSampleCount", targetPlaystyle.getHealSampleCount());
+        frame.field("meanTargetPearlGapTicks", targetPlaystyle.getMeanPearlGap());
+        frame.field("medianTargetPearlGapTicks", targetPlaystyle.getMedianPearlGap());
+        frame.field("targetPearlIntervalSampleCount", targetPlaystyle.getPearlSampleCount());
+        frame.field("myHitPressure", combatHistory.getMyPressure());
+        frame.field("targetHitPressure", combatHistory.getTargetPressure());
+        frame.field("hitsLandedLastK", combatHistory.getHitsLanded());
+        frame.field("hitsTakenLastK", combatHistory.getHitsTaken());
+        frame.field("netHitsLastK", combatHistory.getNetHits());
+        frame.field("ticksSinceCombat", combatHistory.getTicksSinceCombat(currentTick));
+        frame.field("targetRadialVelocity", targetMovement.getRadialVelocity());
+        frame.field("targetOutwardVelocity", targetMovement.getOutwardVelocity());
+        frame.field("targetFacingMeCos", targetMovement.getFacingMeCos());
+        frame.field("distanceDelta5", targetMovement.getDistanceDelta5());
+        frame.field("distanceDelta20", targetMovement.getDistanceDelta20());
         frame.field("targetEstimatedHp", targetExists ? targetHpTracker.getEstimatedTargetHp() : null);
         frame.field("targetEstimatedPotions", targetExists ? targetInventoryTracker.getTargetHealthPotions() : null);
         frame.field("targetEstimatedPearls", targetExists ? targetInventoryTracker.getTargetPearls() : null);
@@ -374,10 +458,19 @@ public class Recorder {
         frame.field("targetSpeedDurationTicks", targetExists ? itemsHandler.getPotionDuration(target, Potion.moveSpeed): null);
         frame.field("targetFood", targetExists ? targetFoodTracker.getTargetHunger() : null);
         frame.field("targetFoodRaw", targetExists ? target.getFoodStats().getFoodLevel() : null);
-        frame.field("targetEating", targetExists ? itemsHandler.isFood(target.getHeldItem()) && target.isUsingItem() : null);
-        frame.field("targetSpeeding", targetExists ? itemsHandler.isSpeedPotion(target.getHeldItem()) && target.isUsingItem() : null);
-        frame.field("targetPearling", targetExists ? itemsHandler.isPearl(target.getHeldItem()) && target.isUsingItem() : null);
-        frame.field("targetPotting", targetExists ? itemsHandler.isSplashHealthPotion(target.getHeldItem()) && target.isUsingItem() : null);
+        Boolean targetHoldingFood = targetExists ? itemsHandler.isFood(target.getHeldItem()) : null;
+        Boolean targetHoldingSpeedPotion = targetExists ? itemsHandler.isSpeedPotion(target.getHeldItem()) : null;
+        Boolean targetHoldingHealPotion = targetExists ? itemsHandler.isSplashHealthPotion(target.getHeldItem()) : null;
+        frame.field("targetHoldingSword", targetExists ? itemsHandler.isSword(target.getHeldItem()) : null);
+        frame.field("targetHoldingFood", targetHoldingFood);
+        frame.field("targetHoldingSpeedPotion", targetHoldingSpeedPotion);
+        frame.field("targetPearling", targetExists ? targetPearling : null);
+        frame.field("targetHoldingHealPotion", targetHoldingHealPotion);
+        // Compatibility aliases now describe holding, not active item use.
+        frame.field("targetEating", targetHoldingFood);
+        frame.field("targetSpeeding", targetHoldingSpeedPotion);
+        boolean targetPotting = combatHistory.consumeTargetPotting();
+        frame.field("targetPotting", targetExists ? targetPotting : null);
         frame.field("yawDiffToTarget", yawDiffToTarget);
         frame.field("pitchDiffToTarget", pitchDiffToTarget);
         frame.field("hpDiff", targetExists ? targetHpTracker.getEstimatedTargetHp() - mc.thePlayer.getHealth() : null);
@@ -389,6 +482,10 @@ public class Recorder {
 
     private void updateCombos(EntityPlayer target) {
         if (target.hurtTime > lastTargetHurtTime) {
+            if (targetHitTracker.recordHurt(target.getEntityId(), recordingTickIndex)) {
+                combatHistory.landedHit(recordingTickIndex);
+                targetPlaystyle.landedHit();
+            }
             myCombo++;
             targetCombo = 0;
             lastHitLandedTick = recordingTickIndex;
@@ -399,6 +496,7 @@ public class Recorder {
         lastTargetHurtTime = target.hurtTime;
 
         if (mc.thePlayer.hurtTime > lastMyHurtTime) {
+            combatHistory.tookHit(recordingTickIndex);
             targetCombo++;
             myCombo = 0;
             lastDamageTakenTick = recordingTickIndex;
@@ -424,10 +522,11 @@ public class Recorder {
 
         comboTrackedTargetId = targetId;
         lastTargetHurtTime = target == null ? 0 : target.hurtTime;
+        lastMyHurtTime = mc.thePlayer == null ? 0 : mc.thePlayer.hurtTime;
     }
 
     private EntityPlayer findClosestPlayer() {
-        if (mc.theWorld == null) return null;
+        if (mc.theWorld == null || mc.thePlayer == null) return null;
         EntityPlayer closestPlayer = null;
         double closestDistance = Double.MAX_VALUE;
 
@@ -435,6 +534,7 @@ public class Recorder {
             if (playerObject instanceof EntityPlayer) {
                 EntityPlayer player = (EntityPlayer) playerObject;
                 if (player != mc.thePlayer && !player.isInvisible() && player.getHealth() > 0 && !player.isDead) {
+                    if (roundTargetUuid != null && !roundTargetUuid.equals(player.getUniqueID())) continue;
                     double distance = mc.thePlayer.getDistanceToEntity(player);
                     if (distance < closestDistance) {
                         closestDistance = distance;
@@ -443,7 +543,21 @@ public class Recorder {
                 }
             }
         }
+        if (closestPlayer != null && roundTargetUuid == null) roundTargetUuid = closestPlayer.getUniqueID();
         return closestPlayer;
+    }
+
+    private void clearTargetObservation() {
+        targetPlaystyle.observationLost();
+        targetMovement.reset();
+        comboTrackedTargetId = -1;
+        previousTargetYawById.clear();
+        previousTargetPitchById.clear();
+        targetHitTracker.updateTarget(-1);
+        targetHpTracker.updateTargetState(null, recordingTickIndex);
+        targetHpTracker.updateTargetPotionState(null, recordingTickIndex);
+        targetFoodTracker.updateTargetState(null, recordingTickIndex);
+        activeEnemyPearlEntityIds.clear();
     }
 
     private boolean isHoldingItem(String displayName) {
@@ -506,6 +620,7 @@ public class Recorder {
             return false;
         }
 
+        boolean detectedThrow = false;
         Set<Integer> visibleEnemyPearlIds = new HashSet<Integer>();
         for (Object entityObject : mc.theWorld.loadedEntityList) {
             if (!(entityObject instanceof EntityEnderPearl)) continue;
@@ -521,9 +636,18 @@ public class Recorder {
 
             if (!isEnemyPearlFromTarget(pearl, target)) continue;
 
+            detectedThrow = true;
             seenEnemyPearlEntityIds.add(pearlId);
             activeEnemyPearlEntityIds.add(pearlId);
             visibleEnemyPearlIds.add(pearlId);
+            Integer pearlGap = targetPlaystyle.pearlThrown(currentTick);
+            if (pearlGap != null) {
+                writeEvent("TARGET_PEARL_INTERVAL_SAMPLE", detailsBuilder()
+                        .field("targetEntityId", target.getEntityId())
+                        .field("pearlEntityId", pearlId)
+                        .field("gapTicks", pearlGap)
+                        .field("tick", currentTick));
+            }
             lastEnemyPearlTick = currentTick;
             enemyPearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
             writeEvent("ENEMY_PEARL_THROW", detailsBuilder()
@@ -531,12 +655,10 @@ public class Recorder {
                     .field("pearlEntityId", pearlId)
                     .field("pearlTicksExisted", pearl.ticksExisted)
                     .field("distanceToTarget", (double) target.getDistanceToEntity(pearl)));
-            applyEnemyPearlDamageForLandedPearls(target, visibleEnemyPearlIds, currentTick);
-            return true;
         }
 
         applyEnemyPearlDamageForLandedPearls(target, visibleEnemyPearlIds, currentTick);
-        return false;
+        return detectedThrow;
     }
 
     private void applyEnemyPearlDamageForLandedPearls(EntityPlayer target, Set<Integer> visibleEnemyPearlIds, int currentTick) {
@@ -573,7 +695,7 @@ public class Recorder {
         packetHandler.install();
     }
 
-    private void handleOutgoingPacket(Packet packet, int tick) {
+    private synchronized void handleOutgoingPacket(Packet packet, int tick) {
         if (!recording) return;
 
         if (packet instanceof C02PacketUseEntity) {
@@ -595,6 +717,7 @@ public class Recorder {
                 .field("targetEntityType", entity == null ? null : entity.getClass().getSimpleName());
 
         if (packet.getAction() == C02PacketUseEntity.Action.ATTACK) {
+            targetHitTracker.recordAttack(entity == null ? -1 : entity.getEntityId(), tick);
             boolean criticalHit = isCriticalAttackPacket(tick);
             lastAttackTick = tick;
             lastCriticalAttackTick = tick;
@@ -657,9 +780,7 @@ public class Recorder {
         }
 
         if (itemsHandler.isPearl(stack)) {
-            lastPearlTick = tick;
-            pearlCooldownTicksRemaining = PEARL_COOLDOWN_TICKS;
-            writeEvent("PEARL_THROW", itemDetails(stack).field("source", "C08PacketPlayerBlockPlacement"));
+            pendingSelfPearlUse = true;
         }
     }
 
@@ -668,10 +789,17 @@ public class Recorder {
                 .field("slot", packet.getSlotId()));
     }
 
-    private void handleIncomingPacket(Packet packet, int tick) {
+    private synchronized void handleIncomingPacket(Packet packet, int tick) {
         if (!recording) return;
 
-        if (packet instanceof S12PacketEntityVelocity) {
+        if (packet instanceof S08PacketPlayerPosLook) {
+            targetMovement.reset();
+        } else if (packet instanceof S18PacketEntityTeleport) {
+            EntityPlayer target = findClosestPlayer();
+            if (target != null && target.getEntityId() == ((S18PacketEntityTeleport) packet).func_149451_c()) {
+                targetMovement.reset();
+            }
+        } else if (packet instanceof S12PacketEntityVelocity) {
             handleEntityVelocityPacket((S12PacketEntityVelocity) packet, tick);
         } else if (packet instanceof S28PacketEffect) {
             handleEffectPacket((S28PacketEffect) packet, tick);
@@ -781,7 +909,7 @@ public class Recorder {
     }
 
     private void writeEvent(String type, JsonLineBuilder details) {
-        recordWriter.writeEvent(type, details, recordingTickIndex, getWorldTick());
+        recordWriter.writeEvent(type, details.field("recorderRoundId", recorderRoundId), recordingTickIndex, getWorldTick());
     }
 
     private JsonLineBuilder detailsBuilder() {
@@ -808,18 +936,18 @@ public class Recorder {
 
     public void sendMessage(String message) {
         if (mc.thePlayer != null) {
-            mc.thePlayer.addChatMessage(new ChatComponentText("\u00A77[\u00A7bLipsy\u00A77] \u00A7f" + message));
+            mc.thePlayer.addChatMessage(new ChatComponentText("§7[§bL1psy§7] §f" + message));
         }
     }
 
-    public void startRecording() {
-        if (recording) return;
-
-        startTimeMs = System.currentTimeMillis();
-        endTimeMs = 0;
-        startWorldTick = getWorldTick();
-        serverIp = getServerIp();
-        recordingTickIndex = 0;
+    private void resetRoundState() {
+        targetPlaystyle.reset();
+        combatHistory.reset();
+        targetMovement.reset();
+        previousSelfHp = null;
+        roundTargetUuid = null;
+        pendingSelfPearlUse = false;
+        selfPearlTracker.reset(mc.thePlayer == null ? -1 : itemsHandler.countPearls());
         lastInventorySampleTick = -1;
         cachedHotbar = new ArrayList<String>();
         cachedHotbarPotions = 0;
@@ -854,6 +982,7 @@ public class Recorder {
         lastPearlTick = -1;
         lastEnemyPearlTick = -1;
         lastPotTick = -1;
+        lastBlockTick = -1;
         lastUseItemPacketTick = -1;
         lastVelocityEventTick = -1;
         lastVelocityEntityId = -1;
@@ -864,33 +993,51 @@ public class Recorder {
         lastCriticalAttackTick = -1;
         lastCriticalAttackTargetEntityId = -1;
         lastCriticalAttackWasCritical = false;
-        packetHandler.resetSession();
         myCombo = 0;
         targetCombo = 0;
         lastMyHurtTime = 0;
         lastTargetHurtTime = 0;
         comboTrackedTargetId = -1;
+        targetHitTracker.reset();
         targetHpTracker.reset();
         targetFoodTracker.reset();
         targetInventoryTracker.reset();
+    }
+
+    public synchronized void startRecording() {
+        if (recording) return;
+
+        startTimeMs = System.currentTimeMillis();
+        endTimeMs = 0;
+        startWorldTick = getWorldTick();
+        serverIp = getServerIp();
+        recordingTickIndex = 0;
+        recorderRoundId = 1;
+        resetRoundState();
+        packetHandler.resetSession();
 
         try {
             recordWriter.startSession(startTimeMs, startWorldTick, serverIp);
             sessionId = recordWriter.getSessionId();
             recording = true;
             writeEvent("RECORD_START", detailsBuilder()
+                    .field("hitPressureDecay", featureConfig.hitPressureDecay)
+                    .field("combatHistoryTicks", featureConfig.combatHistoryTicks)
+                    .field("movementVelocityWindowTicks", 5)
+                    .field("healEpisodeGapTicks", TargetPlaystyleTracker.HEAL_EPISODE_GAP_TICKS)
                     .field("sessionId", sessionId)
                     .field("serverIp", serverIp)
                     .field("startTimeMs", startTimeMs)
                     .field("startWorldTick", startWorldTick));
-            sendMessage("Recording started: " + sessionId);
+            writeEvent("ROUND_START", detailsBuilder().field("source", "record_start"));
+            sendMessage("Recording started: " + sessionId + " (round 1; Backspace starts next round)");
         } catch (IOException ex) {
             ex.printStackTrace();
             sendMessage("Failed to start recording: " + ex.getMessage());
         }
     }
 
-    public void stopRecording() {
+    public synchronized void stopRecording() {
         if (!recording) return;
 
         recording = false;
@@ -912,4 +1059,5 @@ public class Recorder {
 
     public long getCurrentTimeMs() {return System.currentTimeMillis();}
 
+    public int getRecordingRoundId() {return recorderRoundId;}
 }

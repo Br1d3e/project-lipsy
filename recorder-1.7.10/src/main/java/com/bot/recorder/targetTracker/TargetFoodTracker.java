@@ -54,25 +54,26 @@ public class TargetFoodTracker {
     }
 
     public void updateTargetState(EntityPlayer target, int currentTick) {
-        int currentTargetId = target == null ? -1 : target.getEntityId();
+        if (target == null) {
+            hasPreviousTargetPosition = false;
+            targetWasUsingFood = false;
+            targetFoodUseStartTick = -1;
+            targetFoodUseStack = null;
+            return;
+        }
+        int currentTargetId = target.getEntityId();
         if (currentTargetId == trackedTargetId) return;
-
+        boolean firstObservation = trackedTargetId < 0;
         trackedTargetId = currentTargetId;
-        targetHunger = getInitialTargetHunger(target);
-        String targetHungerSource = hasFetchableTargetHunger(target) ? "client_food_stats" : "default";
-        targetSaturation = DEFAULT_SATURATION;
-        targetExhaustion = DEFAULT_EXHAUSTION;
-        foodTimer = 0;
+        if (firstObservation) targetHunger = getInitialTargetHunger(target);
+        String targetHungerSource = firstObservation && hasFetchableTargetHunger(target) ? "client_food_stats" : "round_estimate";
         hasPreviousTargetPosition = false;
         targetWasUsingFood = false;
         targetFoodUseStartTick = -1;
         targetFoodUseStack = null;
+        rememberTargetPosition(target);
 
-        if (target != null) {
-            rememberTargetPosition(target);
-        }
-
-        writeEvent("TARGET_FOOD_RESET", detailsBuilder()
+        writeEvent("TARGET_FOOD_BOUND", detailsBuilder()
                 .field("targetEntityId", currentTargetId < 0 ? null : currentTargetId)
                 .field("targetHunger", currentTargetId < 0 ? null : targetHunger)
                 .field("targetHungerSource", currentTargetId < 0 ? null : targetHungerSource)

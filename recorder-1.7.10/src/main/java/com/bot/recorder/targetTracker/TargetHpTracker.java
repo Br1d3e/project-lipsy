@@ -6,7 +6,6 @@ import com.bot.recorder.recordWriter.JsonLineBuilder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.enchantment.Enchantment;
 import net.minecraft.enchantment.EnchantmentHelper;
-import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.projectile.EntityPotion;
 import net.minecraft.init.Items;
@@ -21,6 +20,8 @@ import java.util.*;
 
 public class TargetHpTracker {
     public interface EventSink {
+        void onTargetHealed(int targetEntityId);
+
         void writeEvent(String type, JsonLineBuilder details);
     }
 
@@ -77,6 +78,11 @@ public class TargetHpTracker {
     }
 
     public void updateTargetState(EntityPlayer target, int currentTick) {
+        if (target == null) {
+            targetHitboxHistory.clear();
+            targetBlockingHistory.clear();
+            return;
+        }
         int currentTargetId = target == null ? -1 : target.getEntityId();
         if (currentTargetId == trackedTargetId) {
             updateTargetArmorState(target);
@@ -87,12 +93,7 @@ public class TargetHpTracker {
 
         int previousTargetId = trackedTargetId;
         trackedTargetId = currentTargetId;
-        estimatedTargetHp = TARGET_HP_DEFAULT;
-        lastEstimatedTargetDamage = 0.0F;
-        lastEstimatedTargetHeal = 0.0F;
-        naturalRegenTimer = 0;
         targetPotions.clear();
-        processedTargetPotionEntityIds.clear();
         targetHitboxHistory.clear();
         targetBlockingHistory.clear();
         updateTargetArmorState(target);
@@ -309,20 +310,8 @@ public class TargetHpTracker {
     private boolean isTargetHealingSplashPotion(EntityPotion potion, EntityPlayer target) {
         if (!isInstantHealthIISplashPotion(potion)) return false;
 
-        Entity thrower = potion.getThrower();
-        if (thrower == mc.thePlayer) return false;
-        if (thrower == target) return true;
-        if (thrower != null) return false;
-
-        double targetDistance = target.getDistanceToEntity(potion);
-        if (targetDistance > 4.0D) return false;
-
-        if (mc.thePlayer != null) {
-            double selfDistance = mc.thePlayer.getDistanceToEntity(potion);
-            if (selfDistance + 0.5D < targetDistance) return false;
-        }
-
-        return true;
+        // Any nearby splash can heal the target, regardless of who threw it.
+        return target.getDistanceToEntity(potion) <= 4.0D;
     }
 
     private boolean isInstantHealthIISplashPotion(EntityPotion potion) {
@@ -375,6 +364,7 @@ public class TargetHpTracker {
         float healHp = (float) Math.floor(INSTANT_HEALTH_II_BASE_HEAL_HP * effectiveness + 0.5F);
 
         if (healHp > 0.0F) {
+            if (eventSink != null) eventSink.onTargetHealed(target.getEntityId());
             estimatedTargetHp = clampFloat(estimatedTargetHp + healHp, 0.0F, TARGET_HP_DEFAULT);
             lastEstimatedTargetHeal = healHp;
             lastEstimatedTargetDamage = 0.0F;
@@ -608,7 +598,7 @@ public class TargetHpTracker {
     }
 
     private int calculatePearlDamageEpf() {
-        int featherFallingEpf = MathHelper.floor_float(((6.0F + targetFeatherFallingLevel * targetFeatherFallingLevel) / 3.0F) * 2.5F);
+        int featherFallingEpf = targetFeatherFallingLevel <= 0 ? 0 : MathHelper.floor_float(((6.0F + targetFeatherFallingLevel * targetFeatherFallingLevel) / 3.0F) * 2.5F);
         return targetProtectionEpf + featherFallingEpf;
     }
 

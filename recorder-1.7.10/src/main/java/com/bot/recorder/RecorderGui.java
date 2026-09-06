@@ -30,7 +30,7 @@ public class RecorderGui extends GuiScreen {
         int lineHeight = 7;
         float scale = 0.5F;
 
-        drawRect(x - 3, y - 3, width - 3, y + lineHeight * 4 + 1, 0x80000000);
+        drawRect(x - 3, y - 3, width - 3, y + lineHeight * 5 + 1, 0x80000000);
         GL11.glPushMatrix();
         GL11.glScalef(scale, scale, 1.0F);
         int sx = (int) (x / scale);
@@ -38,8 +38,9 @@ public class RecorderGui extends GuiScreen {
         int scaledLineHeight = (int) (lineHeight / scale);
         minecraft.fontRendererObj.drawStringWithShadow("RECORDING", sx, sy, 0xFFFF5555);
         minecraft.fontRendererObj.drawStringWithShadow("sid: " + shortSessionId(recorder.getSessionId()), sx, sy + scaledLineHeight, 0xFFFFFFFF);
-        minecraft.fontRendererObj.drawStringWithShadow("tick: " + recorder.getRecordingTickIndex(), sx, sy + scaledLineHeight * 2, 0xFFFFFFFF);
-        minecraft.fontRendererObj.drawStringWithShadow("ms: " + recorder.getCurrentTimeMs(), sx, sy + scaledLineHeight * 3, 0xFFFFFFFF);
+        minecraft.fontRendererObj.drawStringWithShadow("roundId: " + recorder.getRecordingRoundId(), sx,sy + scaledLineHeight * 2, 0xFFFFFFFF);
+        minecraft.fontRendererObj.drawStringWithShadow("tick: " + recorder.getRecordingTickIndex(), sx, sy + scaledLineHeight * 3, 0xFFFFFFFF);
+        minecraft.fontRendererObj.drawStringWithShadow("ms: " + recorder.getCurrentTimeMs(), sx, sy + scaledLineHeight * 4, 0xFFFFFFFF);
         GL11.glPopMatrix();
     }
 
