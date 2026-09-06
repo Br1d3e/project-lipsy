@@ -10,6 +10,7 @@ TRAIN_FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gma
 
 FRAMES_NAME = "frames.jsonl.gz"
 LABELS_NAME = "labels.json"
+EVENTS_NAME = "events.jsonl"
 ROUND_START_TRIM_TICKS = 20
 ROUND_END_TRIM_TICKS = 20
 
@@ -30,7 +31,7 @@ class Datasets:
                 self.frames = []
                 self.labels = []
                 self.rounds = []
-                for session_frame, session_label in self.iter_folders(folder):
+                for session_frame, session_label, session_events in self.iter_folders(folder):
                     if self.keep_frames:
                         self.frames.append(session_frame)
                     self.labels.append(session_label)
@@ -75,7 +76,7 @@ class Datasets:
     def load_folders(self, folder):
         frames = []
         labels = []
-        for session_frames, session_labels in self.iter_folders(folder):
+        for session_frames, session_labels, session_events in self.iter_folders(folder):
             frames.append(session_frames)
             labels.append(session_labels)
 
@@ -102,7 +103,13 @@ class Datasets:
             session_labels = session_labels["labels"]
             session_labels = sorted(session_labels, key=lambda l: l["start_tick"])
 
-            yield session_frames, session_labels
+            events_path = os.path.join(session_path, EVENTS_NAME)
+            if not os.path.exists(events_path):
+                continue
+            # session_events = self._read_jsonl(events_path)
+            session_events = None
+
+            yield session_frames, session_labels, session_events
 
     def load_folder(self, folder):
         frames_path = os.path.join(folder, FRAMES_NAME)
@@ -222,6 +229,9 @@ class Datasets:
                 frames.loc[row_idx, "label_start"] = label["start_tick"]
 
         return frames
+
+    def _col_event_target_heal(self, frames: pd.DataFrame, events) -> pd.DataFrame:
+        ...
 
     def concatenate_frames(self, rounds):
         parts = []

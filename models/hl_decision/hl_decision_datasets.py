@@ -5,10 +5,12 @@ import pickle
 
 from models.datasets import Datasets
 from models.datasets import TRAIN_FOLDER
-from models.torch_dataset import TorchDataset
+from models.torch_dataset import TorchDataset, HLMultiTaskDataset
 
 from torch.utils.data import DataLoader
 import torch
+
+import matplotlib.pyplot as plt
 
 FEATURES = [
     # self
@@ -123,6 +125,8 @@ FEATURE_DEFAULTS = {
     "s_refill": 0,
 }
 
+AUXILIARY_TARGETS = ["target_pot_soon", "target_pot_urgency"]
+
 class HLDecisionDataset:
     label_name = None
     label_type = None
@@ -156,6 +160,10 @@ class HLDecisionDataset:
             self.save_pickle_cache(self.train_frames, "train")
             self.save_pickle_cache(self.val_frames, "val")
             self.save_pickle_cache(self.test_frames, "test")
+
+        self.train_frames = self._col_target_pot_soon(self.train_frames)
+        self.val_frames = self._col_target_pot_soon(self.val_frames)
+        self.test_frames = self._col_target_pot_soon(self.test_frames)
 
     def cache_name(self, name):
         return f"hl_v1_{name}.pickle"
@@ -215,6 +223,55 @@ class HLDecisionDataset:
             frames[state] = (previous_state == state).astype(np.float32)
 
         return frames
+
+    def _col_target_pot_soon(self, frames: pd.DataFrame, before_ticks=20):
+        if before_ticks < 1:
+            raise ValueError("before_ticks must be >= 1")
+
+        frames = frames.copy()
+        pot_soon_mask = np.zeros(len(frames), dtype=bool)
+        pot_urgency = np.zeros(len(frames), dtype=np.float32)
+
+        for _, round_df in frames.groupby(frames["round_id"], sort=False):
+            round_df = round_df.sort_values("recordingTickIndex", kind="stable")
+            round_idx = frames.index.get_indexer(round_df.index)
+            ticks = round_df["recordingTickIndex"].to_numpy()
+            target_exists = round_df["targetExists"].fillna(False).to_numpy(dtype=bool)
+            target_ids = round_df["targetId"].to_numpy()
+            estimated_hp = round_df["targetEstimatedHp"].to_numpy(dtype=np.float64)
+
+            hp_diff = np.diff(estimated_hp, prepend=np.nan)
+            stable_target = (
+                target_exists &
+                np.concatenate(([False], target_exists[:-1])) &
+                (target_ids == np.concatenate(([np.nan], target_ids[:-1]))) &
+                (ticks == np.concatenate(([ticks[0] - 1], ticks[:-1])) + 1)
+            )
+            start_ticks = ticks[stable_target & (hp_diff > 1.01)]
+
+            round_pot_soon = np.zeros(len(round_df), dtype=bool)
+            round_pot_urgency = np.zeros(len(round_df), dtype=np.float32)
+            for start in start_ticks:
+                delta_ticks = start - ticks
+                before_pot = (delta_ticks >= 1) & (delta_ticks <= before_ticks)
+                round_pot_soon |= before_pot
+                round_pot_urgency = np.maximum(
+                    round_pot_urgency,
+                    np.where(
+                        before_pot,
+                        1.0 - (delta_ticks - 1) / before_ticks,
+                        0.0,
+                    ),
+                )
+
+            pot_soon_mask[round_idx] = round_pot_soon
+            pot_urgency[round_idx] = round_pot_urgency
+
+        frames["target_pot_soon"] = pot_soon_mask
+        frames["target_pot_urgency"] = pot_urgency
+
+        return frames
+
 
     def concatenate_frames(self, rounds):
         parts = []
@@ -326,6 +383,7 @@ class HLDecisionDataset:
             candidate_mask_fn=None,
             target_mask_fn=None,
             default_features=None,
+            return_auxiliary_targets=False,
     ):
         if features is None:
             features = self.feature_list
@@ -379,6 +437,12 @@ class HLDecisionDataset:
         X = []
         Y = []
 
+        aux_df = frames[AUXILIARY_TARGETS]
+        aux_targets = {
+            "target_pot_soon": [],
+            "target_pot_urgency": [],
+        }
+
         if "round_id" in frames.columns:
             round_groups = frames.groupby(frames["round_id"], sort=False)
         else:
@@ -404,10 +468,15 @@ class HLDecisionDataset:
                 target_idx = round_idx[end + 1]
                 x = feature_matrix[frame_idx]
                 y = targets_value[target_idx]
+                aux_idx = round_idx[end]
+                pot_soon = np.float32(aux_df.iloc[aux_idx]["target_pot_soon"])
+                pot_urgency = np.float32(aux_df.iloc[aux_idx]["target_pot_urgency"])
                 if not np.isfinite(x).all() or not np.isfinite(y).all():
                     continue
                 X.append(x)
                 Y.append(y)
+                aux_targets["target_pot_soon"].append(pot_soon)
+                aux_targets["target_pot_urgency"].append(pot_urgency)
 
         feature_dim = feature_matrix.shape[1]
         target_dim = 1 if targets_value.ndim == 1 else targets_value.shape[1]
@@ -415,10 +484,22 @@ class HLDecisionDataset:
             return np.empty((0, seq_len, feature_dim), dtype=np.float32), np.empty((0, target_dim),
                                                                                    dtype=np.float32)
 
+        X = np.asarray(X, dtype=np.float32)
         Y = np.asarray(Y, dtype=np.float32)
         if Y.ndim == 1:
             Y = Y.reshape(-1, 1)
-        return np.asarray(X, dtype=np.float32), Y
+
+        if return_auxiliary_targets:
+            state = Y
+            Y_dict = {"state": state}
+            for key, val in aux_targets.items():
+                val = np.asarray(val, dtype=np.float32)
+                if val.ndim == 1:
+                    val = val.reshape(-1, 1)
+                Y_dict[key] = val
+            return X, Y_dict
+
+        return X, Y
 
     def label_match_mask(self, frames, label_name=None, label_type=None, labels=None):
         if labels is None:
@@ -752,6 +833,7 @@ class HLDecisionDataset:
             features=None,
             msg=True,
             balance_targets=True,
+            return_auxiliary_targets=False,
     ):
         if label_name is None:
             label_name = self.label_name
@@ -775,6 +857,7 @@ class HLDecisionDataset:
             input_mask_fn=lambda f: valid_mask,
             candidate_mask_fn=lambda f: candidate_mask,
             target=targets,
+            return_auxiliary_targets=return_auxiliary_targets,
         )
         if balance_targets:
             X, Y = self.balance_by_target(
@@ -787,7 +870,7 @@ class HLDecisionDataset:
                 msg=msg,
             )
         if msg:
-            print(f"sampled next-state seq X/Y: X={X.shape} Y={Y.shape}")
+            print(f"sampled next-state seq X/Y: X={X.shape} Y={Y.shape if hasattr(Y, "shape") else Y.keys()}")
             self.target_distribution(Y)
         return X, Y
 
@@ -821,6 +904,7 @@ class HLDecisionDataset:
             label_name=None,
             label_type=None,
             features=None,
+            return_auxiliary_targets=False,
     ):
         if label_name is None:
             label_name = self.label_name
@@ -838,6 +922,7 @@ class HLDecisionDataset:
             seq_len=seq_len,
             input_mask_fn=lambda f: self.is_valid_tick(frames),
             target=targets,
+            return_auxiliary_targets=return_auxiliary_targets,
         )
         return X, Y
 
@@ -858,6 +943,7 @@ class HLDecisionDataset:
             msg=True,
             return_sample_weights=False,
             expected_distribution=None,
+            return_auxiliary_targets=True,
     ):
         if seq_len < 1:
             raise ValueError("seq_len must be >= 1.")
@@ -895,6 +981,7 @@ class HLDecisionDataset:
                 features=features,
                 msg=msg,
                 balance_targets=False,
+                return_auxiliary_targets=return_auxiliary_targets
             )
 
         if return_sample_weights:
@@ -904,6 +991,7 @@ class HLDecisionDataset:
                 msg=msg,
             )
             return X, Y, sample_weights
+
         return X, Y
 
     def get_val_X_Y(
@@ -921,6 +1009,7 @@ class HLDecisionDataset:
             features=None,
             seq_len=1,
             msg=True,
+            return_auxiliary_targets=True,
     ):
         if seq_len < 1:
             raise ValueError("seq_len must be >= 1.")
@@ -938,6 +1027,7 @@ class HLDecisionDataset:
                 prefer_hard_negative=prefer_hard_negative,
                 sample_mode=sample_mode,
                 features=features,
+                balance_targets=False,
                 msg=msg,
             )
         return self.get_seq_sampled_X_Y(
@@ -955,6 +1045,8 @@ class HLDecisionDataset:
             sample_mode=sample_mode,
             features=features,
             msg=msg,
+            balance_targets=False,
+            return_auxiliary_targets=return_auxiliary_targets,
         )
 
     def get_test_X_Y(
@@ -964,6 +1056,7 @@ class HLDecisionDataset:
             label_type=None,
             features=None,
             seq_len=1,
+            return_auxiliary_targets=True,
     ):
         if seq_len < 1:
             raise ValueError("seq_len must be >= 1.")
@@ -973,7 +1066,7 @@ class HLDecisionDataset:
                 transition_context=transition_context,
                 label_name=label_name,
                 label_type=label_type,
-                features=features
+                features=features,
             )
         return self.get_seq_realistic_X_Y(
             self.test_frames,
@@ -981,7 +1074,8 @@ class HLDecisionDataset:
             transition_context=transition_context,
             label_name=label_name,
             label_type=label_type,
-            features=features
+            features=features,
+            return_auxiliary_targets=return_auxiliary_targets,
         )
 
     def index_of_features(self, feature_name: str):
@@ -1052,9 +1146,24 @@ class HLDecisionDataset:
     def target_distribution(X, Y=None):
         if Y is None:
             Y = X
+        if isinstance(Y, dict):
+            print("Y targets:")
+            result = {}
+            for key, val in Y.items():
+                print(f"{key}:")
+                result[key] = HLDecisionDataset.target_distribution(val)
+            return result
+
         Y = np.asarray(Y).reshape(-1)
-        values, counts = np.unique(Y.astype(int), return_counts=True)
-        result = {int(v): f"{int(c)} ({float(c / len(X) * 100):.2f}%)" for v, c in zip(values, counts)}
+        if Y.size == 0:
+            print("target_distribution: {}")
+            return {}
+        values, counts = np.unique(Y, return_counts=True)
+        result = {
+            int(value) if float(value).is_integer() else float(value):
+                f"{int(count)} ({float(count / Y.size * 100):.2f}%)"
+            for value, count in zip(values, counts)
+        }
         print(f"target_distribution: {result}")
         return result
 
@@ -1062,19 +1171,35 @@ class HLDecisionDataset:
 if __name__ == "__main__":
     ds = HLDecisionDataset(label_name=None, label_type=None, use_cache=True, build_cache=False)
 
-    ds.print_label_distribution("train")
-    ds.print_label_distribution("val")
-    ds.print_label_distribution("test")
+    train_frames = ds.get_train_frames()
+    # print(np.unique(train_frames["enemyPearlAvailable"], return_counts=True))
+    # print(np.unique(train_frames["enemyPearlCooldownTicksRemaining"], return_counts=True))
+    # print(np.unique(train_frames["targetSpeeding"],return_counts=True))
+    ticks_since_enemy_pearl = train_frames["ticksSinceLastEnemyPearl"].to_numpy()
+    target_estimated_pots = train_frames["targetEstimatedPotions"].to_numpy()
+    target_speed_duration = train_frames["targetSpeedDurationTicks"].to_numpy()
+    plt.plot(target_speed_duration)
+    plt.show()
+    quit()
 
-    train_X, train_Y = ds.get_train_X_Y(transition_context=20, seq_len=40, attack_sample_ratio=3.0)
-    test_X, test_Y = ds.get_test_X_Y(transition_context=20, seq_len=40)
+    # ds.print_label_distribution("train")
+    # ds.print_label_distribution("val")
+    # ds.print_label_distribution("test")
 
-    print(train_X.shape, train_Y.shape)
-    print(test_X.shape, test_Y.shape)
+    train_X, train_Y = ds.get_train_X_Y(seq_len=40, return_auxiliary_targets=True)
+    test_X, test_Y = ds.get_test_X_Y(seq_len=40, return_auxiliary_targets=True)
 
-    train_dataset = TorchDataset(train_X, train_Y)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+    # print(train_X.shape, train_Y.shape)
+    # print(test_X.shape, test_Y.shape)
+    print(train_X.shape, train_Y.keys())
+    print(test_X.shape, test_Y.keys())
+
+    train_dataset = HLMultiTaskDataset(train_X, train_Y)
+    train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
 
     for xb, yb in train_loader:
-        print(xb.shape, yb.shape)
+        print(xb.shape, yb.shape if hasattr(yb, "shape") else yb.keys())
+        for key, val in yb.items():
+            print(f"{key}: {val.shape}")
         break

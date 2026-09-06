@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from sklearn.metrics import log_loss
+from sklearn.metrics import average_precision_score, log_loss, precision_recall_curve
 from torch import nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
@@ -9,7 +9,7 @@ from tqdm import tqdm
 from models.datasets import Datasets
 from models.window_dataset import WindowDataset
 from models.hl_decision.hl_decision_datasets import HLDecisionDataset, TARGETS, LABELS
-from models.torch_dataset import TorchDataset
+from models.torch_dataset import HLMultiTaskDataset
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -20,9 +20,17 @@ import xgboost as xgb
 SEQ_LEN = 50
 TRANSITION_CONTEXT = 40
 LEARNING_RATE = 0.001
-CLASS_WEIGHTS = torch.tensor((1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=torch.float32)
+CLASS_WEIGHTS = torch.tensor((1.0, 1.5, 2.5, 1.0, 1.0, 1.5), dtype=torch.float32)
 EPOCHS = 100
 BATCH_SIZE = 128
+LOSS_WEIGHTS = {
+    "state": 1.0,
+    "heal": 0.5,
+    "pearl": 0.5,
+    "pot_soon": 0.25,
+    "pot_urgency": 0.25,
+}
+POT_URGENCY_BETA = 1.0
 
 
 class HLMultihead(nn.Module):
@@ -40,8 +48,10 @@ class HLMultihead(nn.Module):
 
         self.heal_head = nn.Linear(hidden_dim, 1)
         self.pearl_head = nn.Linear(hidden_dim, 1)
+        self.pot_soon_head = nn.Linear(hidden_dim, 1)
+        self.pot_urgency_head = nn.Linear(hidden_dim, 1)
         self.state_head = nn.Sequential(
-            nn.Linear(hidden_dim + 2, hidden_dim),
+            nn.Linear(hidden_dim + 4, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, output_dim),
         )
@@ -52,13 +62,24 @@ class HLMultihead(nn.Module):
 
         heal_logits = self.heal_head(h)
         pearl_logits = self.pearl_head(h)
-        aux_logits = torch.concat([heal_logits, pearl_logits], dim=-1)
-        state_input = torch.concat([h, aux_logits], dim=-1)
+        pot_soon_logits = self.pot_soon_head(h)
+        pot_urgency_raw = self.pot_urgency_head(h)
+        pot_urgency = torch.sigmoid(pot_urgency_raw)
+        aux_predictions = torch.concat([
+            torch.sigmoid(heal_logits),
+            torch.sigmoid(pearl_logits),
+            torch.sigmoid(pot_soon_logits),
+            pot_urgency,
+        ], dim=-1)
+
+        state_input = torch.concat([h, aux_predictions], dim=-1)
         state_logits = self.state_head(state_input)
         return {
             "state_logits": state_logits,
             "heal_logits": heal_logits.squeeze(-1),
             "pearl_logits": pearl_logits.squeeze(-1),
+            "pot_soon_logits": pot_soon_logits.squeeze(-1),
+            "pot_urgency": pot_urgency.squeeze(-1),
         }
 
 
@@ -196,6 +217,30 @@ class TrainTorchModel:
             checkpoint.update(checkpoint_meta)
         torch.save(checkpoint, save_path)
 
+    @staticmethod
+    def compute_losses(pred, targets, state_criterion, binary_criterion, urgency_criterion,
+                       loss_weights=LOSS_WEIGHTS):
+        required_targets = {"state", "target_pot_soon", "target_pot_urgency"}
+        missing_targets = required_targets.difference(targets)
+        if missing_targets:
+            raise ValueError(f"Missing multitask targets: {sorted(missing_targets)}")
+
+        y_state = targets["state"].reshape(-1).long()
+        y_heal = (y_state == TARGETS["heal"]).float()
+        y_pearl = (y_state == TARGETS["pearl"]).float()
+        y_pot_soon = targets["target_pot_soon"].reshape(-1).float()
+        y_pot_urgency = targets["target_pot_urgency"].reshape(-1).float()
+
+        losses = {
+            "state": state_criterion(pred["state_logits"], y_state),
+            "heal": binary_criterion(pred["heal_logits"], y_heal),
+            "pearl": binary_criterion(pred["pearl_logits"], y_pearl),
+            "pot_soon": binary_criterion(pred["pot_soon_logits"], y_pot_soon),
+            "pot_urgency": urgency_criterion(pred["pot_urgency"], y_pot_urgency),
+        }
+        total_loss = sum(loss_weights[name] * loss for name, loss in losses.items())
+        return total_loss, losses, y_state
+
     # def train(self, save_path=None, model=None, train_loader=None, val_loader=None, checkpoint_meta=None, class_weights=None,
     #           epochs=EPOCHS, lr=LEARNING_RATE, patience=25):
     #     if model is None:
@@ -285,7 +330,8 @@ class TrainTorchModel:
             class_weights = CLASS_WEIGHTS
         class_weights = class_weights.to(device=device, dtype=torch.float32)
         state_criterion = nn.CrossEntropyLoss(weight=class_weights)
-        aux_criterion = nn.BCEWithLogitsLoss()
+        binary_criterion = nn.BCEWithLogitsLoss()
+        urgency_criterion = nn.SmoothL1Loss(beta=POT_URGENCY_BETA)
 
         best_loss = 1e9
         best_epoch = -1
@@ -295,31 +341,37 @@ class TrainTorchModel:
         for epoch in range(epochs):
             epochs_run = epoch + 1
             total_loss = 0.0
+            total_count = 0
+            component_totals = {name: 0.0 for name in LOSS_WEIGHTS}
             model.train()
 
             for xb, yb in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}", leave=False):
-                xb, yb = xb.to(device), yb.to(device)
-                y_state = yb.reshape(-1).long()
-                y_heal = (y_state == TARGETS["heal"]).float()
-                y_pearl = (y_state == TARGETS["pearl"]).float()
+                xb = xb.to(device)
+                yb = {key: value.to(device) for key, value in yb.items()}
 
                 optimizer.zero_grad()
                 pred = model(xb)
-                pred_state = pred["state_logits"]
-                pred_heal = pred["heal_logits"]
-                pred_pearl = pred["pearl_logits"]
-
-                state_loss = state_criterion(pred_state, y_state)
-                heal_loss = aux_criterion(pred_heal, y_heal)
-                pearl_loss = aux_criterion(pred_pearl, y_pearl)
-                loss = state_loss + 0.5 * (heal_loss + pearl_loss)
+                loss, losses, _ = self.compute_losses(
+                    pred,
+                    yb,
+                    state_criterion,
+                    binary_criterion,
+                    urgency_criterion,
+                )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-                total_loss += loss.item()
+                batch_size = xb.shape[0]
+                total_loss += loss.item() * batch_size
+                total_count += batch_size
+                for name, component_loss in losses.items():
+                    component_totals[name] += component_loss.item() * batch_size
 
-            avg_loss = total_loss / len(train_loader)
-            # print(f"Epoch {epoch + 1}/{epochs} | Loss: {avg_loss:.6f}")
+            avg_loss = total_loss / total_count
+            component_averages = {
+                name: value / total_count
+                for name, value in component_totals.items()
+            }
 
             val_loss = self.eval(model, dataloader=val_loader)
             scheduler.step(val_loss)
@@ -328,7 +380,10 @@ class TrainTorchModel:
                 f"Epoch {epoch + 1}/{epochs} | "
                 f"Train Loss: {avg_loss:.6f} | "
                 f"Val Loss: {val_loss:.6f} | "
-                f"Val PPL: {np.exp(val_loss):.6f}"
+                + " | ".join(
+                    f"Train {name}: {value:.6f}"
+                    for name, value in component_averages.items()
+                )
             )
             if val_loss < best_loss:
                 best_loss = val_loss
@@ -366,61 +421,222 @@ class TrainTorchModel:
 
         total_loss = 0.0
         total_count = 0
+        component_totals = {name: 0.0 for name in LOSS_WEIGHTS}
         class_weights = class_weights.to(device=device, dtype=torch.float32)
         state_criterion = nn.CrossEntropyLoss(weight=class_weights)
-        aux_criterion = nn.BCEWithLogitsLoss()
+        binary_criterion = nn.BCEWithLogitsLoss()
+        urgency_criterion = nn.SmoothL1Loss(beta=POT_URGENCY_BETA)
 
         Y_true = []
         Y_pred = []
+        auxiliary_true = {
+            "heal": [],
+            "pearl": [],
+            "pot_soon": [],
+            "pot_urgency": [],
+        }
+        auxiliary_pred = {name: [] for name in auxiliary_true}
 
         with torch.no_grad():
             for x, y in dataloader:
-                x, y = x.to(device), y.to(device)
-                y_state = y.reshape(-1).long()
-                y_heal = (y_state == TARGETS["heal"]).float()
-                y_pearl = (y_state == TARGETS["pearl"]).float()
+                x = x.to(device)
+                y = {key: value.to(device) for key, value in y.items()}
 
                 pred = model(x)
                 pred_state = pred["state_logits"]
-                pred_heal = pred["heal_logits"]
-                pred_pearl = pred["pearl_logits"]
-                state_loss = state_criterion(pred_state, y_state)
-                heal_loss = aux_criterion(pred_heal, y_heal)
-                pearl_loss = aux_criterion(pred_pearl, y_pearl)
-                loss = state_loss + 0.5 * (heal_loss + pearl_loss)
+                loss, losses, y_state = self.compute_losses(
+                    pred,
+                    y,
+                    state_criterion,
+                    binary_criterion,
+                    urgency_criterion,
+                )
 
                 Y_true.append(y_state.cpu().numpy())
                 Y_pred.append(pred_state.cpu().numpy())
+                auxiliary_true["heal"].append((y_state == TARGETS["heal"]).cpu().numpy())
+                auxiliary_true["pearl"].append((y_state == TARGETS["pearl"]).cpu().numpy())
+                auxiliary_true["pot_soon"].append(
+                    y["target_pot_soon"].reshape(-1).cpu().numpy()
+                )
+                auxiliary_true["pot_urgency"].append(
+                    y["target_pot_urgency"].reshape(-1).cpu().numpy()
+                )
+                auxiliary_pred["heal"].append(torch.sigmoid(pred["heal_logits"]).cpu().numpy())
+                auxiliary_pred["pearl"].append(torch.sigmoid(pred["pearl_logits"]).cpu().numpy())
+                auxiliary_pred["pot_soon"].append(torch.sigmoid(pred["pot_soon_logits"]).cpu().numpy())
+                auxiliary_pred["pot_urgency"].append(pred["pot_urgency"].cpu().numpy())
 
                 total_loss += loss.item() * y_state.shape[0]
+                for name, component_loss in losses.items():
+                    component_totals[name] += component_loss.item() * y_state.shape[0]
                 total_count += y_state.shape[0]
 
         avg_loss = total_loss / total_count
         print(f"Eval Loss: {avg_loss:.6f}")
-        print(f"Perplexity: {np.exp(avg_loss):.6f}")
+        print(
+            "Eval components: "
+            + " | ".join(
+                f"{name}: {value / total_count:.6f}"
+                for name, value in component_totals.items()
+            )
+        )
 
         Y_true = np.concatenate(Y_true, axis=0)
         Y_pred = np.concatenate(Y_pred, axis=0)
+        auxiliary_true = {
+            name: np.concatenate(values).reshape(-1)
+            for name, values in auxiliary_true.items()
+        }
+        auxiliary_pred = {
+            name: np.concatenate(values).reshape(-1)
+            for name, values in auxiliary_pred.items()
+        }
         Y_class = self.multi_logits_to_class(Y_pred).detach().cpu().numpy()
         Y_true = Y_true.reshape(-1)
         accuracy = np.mean(Y_true == Y_class)
         print(f"Accuracy: {accuracy:.6f}")
 
+        binary_metrics = {}
+        for name in ("heal", "pearl", "pot_soon"):
+            binary_metrics[name] = self.print_binary_head_metrics(
+                name,
+                auxiliary_true[name],
+                auxiliary_pred[name],
+                component_totals[name] / total_count,
+            )
+        self.print_regression_head_metrics(
+            "pot_urgency",
+            auxiliary_true["pot_urgency"],
+            auxiliary_pred["pot_urgency"],
+            component_totals["pot_urgency"] / total_count,
+        )
+
         if confusion_matrix:
             self.print_confusion_matrix_multi_class(Y_true, Y_class)
 
         if graph:
-            plt.figure(figsize=(12, 6))
-            plt.plot(Y_true, label=f"HL {module_name} true", linewidth=1)
-            plt.plot(Y_class, label=f"HL {module_name} pred", linewidth=1, alpha=0.8)
-            plt.title(f"HL {module_name} Eval")
-            plt.xlabel("sample")
-            plt.ylabel("prediction class")
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
+            self.plot_multitask_eval(
+                Y_true,
+                Y_class,
+                auxiliary_true,
+                auxiliary_pred,
+                binary_metrics,
+                module_name,
+            )
 
         return avg_loss
+
+    @staticmethod
+    def print_binary_head_metrics(name, y_true, y_probability, loss, threshold=0.5):
+        y_true = np.asarray(y_true, dtype=np.int64).reshape(-1)
+        y_probability = np.asarray(y_probability, dtype=np.float64).reshape(-1)
+        if y_true.shape != y_probability.shape:
+            raise ValueError(
+                f"{name} target/prediction shape mismatch: {y_true.shape} vs {y_probability.shape}"
+            )
+        if not np.isfinite(y_probability).all():
+            raise ValueError(f"{name} predictions contain non-finite values")
+
+        y_pred = (y_probability >= threshold).astype(np.int64)
+        tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+        tn = int(np.sum((y_true == 0) & (y_pred == 0)))
+        fp = int(np.sum((y_true == 0) & (y_pred == 1)))
+        fn = int(np.sum((y_true == 1) & (y_pred == 0)))
+        accuracy = (tp + tn) / max(len(y_true), 1)
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        f1 = 2.0 * precision * recall / max(precision + recall, 1e-12)
+        average_precision = (
+            average_precision_score(y_true, y_probability)
+            if np.unique(y_true).size == 2
+            else float("nan")
+        )
+
+        print(f"\n{name} head:")
+        print(f"loss={loss:.6f} | threshold={threshold:.2f} | accuracy={accuracy:.6f}")
+        print(
+            f"precision={precision:.6f} | recall={recall:.6f} | "
+            f"f1={f1:.6f} | average_precision={average_precision:.6f}"
+        )
+        print(
+            f"true positives={int(y_true.sum())}/{len(y_true)} | "
+            f"pred positives={int(y_pred.sum())}/{len(y_pred)}"
+        )
+        print(f"confusion: TN={tn} FP={fp} FN={fn} TP={tp}")
+        return {
+            "average_precision": average_precision,
+            "y_pred": y_pred,
+        }
+
+    @staticmethod
+    def print_regression_head_metrics(name, y_true, y_pred, loss):
+        y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+        y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+        if y_true.shape != y_pred.shape:
+            raise ValueError(f"{name} target/prediction shape mismatch: {y_true.shape} vs {y_pred.shape}")
+        if not np.isfinite(y_pred).all():
+            raise ValueError(f"{name} predictions contain non-finite values")
+
+        error = y_pred - y_true
+        mae = np.mean(np.abs(error))
+        rmse = np.sqrt(np.mean(error ** 2))
+        correlation = (
+            np.corrcoef(y_true, y_pred)[0, 1]
+            if np.std(y_true) > 0.0 and np.std(y_pred) > 0.0
+            else float("nan")
+        )
+        print(f"\n{name} head:")
+        print(
+            f"loss={loss:.6f} | MAE={mae:.6f} | RMSE={rmse:.6f} | "
+            f"correlation={correlation:.6f}"
+        )
+        print(
+            f"true mean/std={np.mean(y_true):.6f}/{np.std(y_true):.6f} | "
+            f"pred mean/std={np.mean(y_pred):.6f}/{np.std(y_pred):.6f}"
+        )
+
+    @staticmethod
+    def plot_multitask_eval(y_state, pred_state, auxiliary_true, auxiliary_pred,
+                            binary_metrics, module_name=""):
+        title_prefix = f"HL {module_name}" if module_name else "HL"
+        figure, axes = plt.subplots(5, 1, figsize=(14, 14), sharex=True)
+        axes[0].plot(y_state, label="true", linewidth=1)
+        axes[0].plot(pred_state, label="pred", linewidth=1, alpha=0.8)
+        axes[0].set_title(f"{title_prefix} state")
+        axes[0].set_ylabel("class")
+
+        for axis, name in zip(axes[1:], ("heal", "pearl", "pot_soon", "pot_urgency")):
+            axis.plot(auxiliary_true[name], label="true", linewidth=1)
+            axis.plot(auxiliary_pred[name], label="probability" if name != "pot_urgency" else "pred",
+                      linewidth=1, alpha=0.8)
+            axis.set_title(f"{title_prefix} {name}")
+            axis.set_ylabel("value")
+
+        axes[-1].set_xlabel("sample")
+        for axis in axes:
+            axis.legend()
+        figure.tight_layout()
+
+        pr_figure, pr_axis = plt.subplots(figsize=(8, 6))
+        plotted_pr_curve = False
+        for name in ("heal", "pearl", "pot_soon"):
+            y_true = auxiliary_true[name]
+            if np.unique(y_true).size < 2:
+                continue
+            precision, recall, _ = precision_recall_curve(y_true, auxiliary_pred[name])
+            ap = binary_metrics[name]["average_precision"]
+            pr_axis.plot(recall, precision, label=f"{name} AP={ap:.3f}")
+            plotted_pr_curve = True
+        pr_axis.set_title(f"{title_prefix} auxiliary precision-recall")
+        pr_axis.set_xlabel("recall")
+        pr_axis.set_ylabel("precision")
+        pr_axis.set_xlim(0.0, 1.0)
+        pr_axis.set_ylim(0.0, 1.05)
+        if plotted_pr_curve:
+            pr_axis.legend()
+        pr_figure.tight_layout()
+        plt.show()
 
     @staticmethod
     def get_device():
@@ -481,23 +697,23 @@ class TrainTorchModel:
 
 if __name__ == "__main__":
     hl_dataset = HLDecisionDataset(use_cache=True, build_cache=False)
-    train_distribution = [0.65, 0.15, 0.03, 0.05, 0.08, 0.04]
-    train_x, train_y, sample_weights = hl_dataset.get_train_X_Y(
+    # train_distribution = [0.65, 0.15, 0.03, 0.05, 0.08, 0.04]
+    train_x, train_y = hl_dataset.get_train_X_Y(
         seq_len=SEQ_LEN,
-        return_sample_weights=True,
-        expected_distribution=train_distribution,
+        return_auxiliary_targets=True,
+        # return_sample_weights=True,
+        # expected_distribution=train_distribution,
     )
-    print(train_x.shape, sample_weights.shape)
-    train_dataset = TorchDataset(train_x, train_y)
+    train_dataset = HLMultiTaskDataset(train_x, train_y)
     print("="*50)
-    val_x, val_y = hl_dataset.get_val_X_Y(seq_len=SEQ_LEN)
-    val_dataset = TorchDataset(val_x, val_y)
+    val_x, val_y = hl_dataset.get_val_X_Y(seq_len=SEQ_LEN, return_auxiliary_targets=True)
+    val_dataset = HLMultiTaskDataset(val_x, val_y)
 
     input_dim = train_dataset[0][0].shape[-1]
     hl_model = HLMultihead(input_dim, 128, 6)
-    trainer = TrainTorchModel(train_dataset, val_dataset, model=hl_model, train_sample_weights=sample_weights)
+    trainer = TrainTorchModel(train_dataset, val_dataset, model=hl_model)
 
-    save_path = Path(__file__).parent.resolve() / "models" / "hl_multihead_2.pt"
+    save_path = Path(__file__).parent.resolve() / "models" / "hl_multihead_3.pt"
     train_info = trainer.train(save_path=save_path)
     print("Training Complete.")
     for info, data in train_info.items():
@@ -505,9 +721,11 @@ if __name__ == "__main__":
 
     print(f"Config: \n"
           f"  model: \n{hl_model}\n"
-          f"  train_distribution: {train_distribution}\n"
+          # f"  train_distribution: {train_distribution}\n"
           f"  loss_type: CrossEntropy\n"
           f"  weights: {CLASS_WEIGHTS.numpy()}\n"
+          f"  loss_weights: {LOSS_WEIGHTS}\n"
+          f"  pot_urgency_beta: {POT_URGENCY_BETA}\n"
           )
 
     trainer.eval(hl_model, graph=True, confusion_matrix=True)
