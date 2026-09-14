@@ -61,3 +61,5 @@ recorder-1.7.10/recordings
 
 # test jupyter
 hl_test.ipynb
+
+test*.py

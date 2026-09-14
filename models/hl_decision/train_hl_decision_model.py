@@ -3,12 +3,15 @@ from pathlib import Path
 
 from sklearn.metrics import average_precision_score, log_loss, precision_recall_curve
 from torch import nn
+from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 from models.datasets import Datasets
 from models.window_dataset import WindowDataset
-from models.hl_decision.hl_decision_datasets import HLDecisionDataset, TARGETS, LABELS
+from models.hl_decision.hl_decision_datasets import (
+    HLDecisionDataset, TARGETS, LABELS, FEATURE_TRANSFORMS, FEATURE_DEFAULTS,
+)
 from models.torch_dataset import HLMultiTaskDataset
 
 from matplotlib import pyplot as plt
@@ -31,7 +34,7 @@ LOSS_WEIGHTS = {
     "pot_urgency": 0.25,
 }
 POT_URGENCY_BETA = 1.0
-
+PEARL_LOSS_WEIGHT = torch.as_tensor(2.5, dtype=torch.float32)
 
 class HLMultihead(nn.Module):
     def __init__(self, input_dim=57, hidden_dim=128, output_dim=6):
@@ -219,11 +222,14 @@ class TrainTorchModel:
 
     @staticmethod
     def compute_losses(pred, targets, state_criterion, binary_criterion, urgency_criterion,
-                       loss_weights=LOSS_WEIGHTS):
+                       loss_weights=LOSS_WEIGHTS, pearl_criterion=None):
         required_targets = {"state", "target_pot_soon", "target_pot_urgency"}
         missing_targets = required_targets.difference(targets)
         if missing_targets:
             raise ValueError(f"Missing multitask targets: {sorted(missing_targets)}")
+
+        if pearl_criterion is None:
+            pearl_criterion = BCEWithLogitsLoss(weight=PEARL_LOSS_WEIGHT)
 
         y_state = targets["state"].reshape(-1).long()
         y_heal = (y_state == TARGETS["heal"]).float()
@@ -234,7 +240,7 @@ class TrainTorchModel:
         losses = {
             "state": state_criterion(pred["state_logits"], y_state),
             "heal": binary_criterion(pred["heal_logits"], y_heal),
-            "pearl": binary_criterion(pred["pearl_logits"], y_pearl),
+            "pearl": pearl_criterion(pred["pearl_logits"], y_pearl),
             "pot_soon": binary_criterion(pred["pot_soon_logits"], y_pot_soon),
             "pot_urgency": urgency_criterion(pred["pot_urgency"], y_pot_urgency),
         }
@@ -713,8 +719,13 @@ if __name__ == "__main__":
     hl_model = HLMultihead(input_dim, 128, 6)
     trainer = TrainTorchModel(train_dataset, val_dataset, model=hl_model)
 
-    save_path = Path(__file__).parent.resolve() / "models" / "hl_multihead_3.pt"
-    train_info = trainer.train(save_path=save_path)
+    save_path = Path(__file__).parent.resolve() / "models" / "hl_multihead_7.pt"
+    train_info = trainer.train(save_path=save_path, checkpoint_meta={
+        "preprocessing_version": 1,
+        "features": list(hl_dataset.feature_list),
+        "feature_transforms": FEATURE_TRANSFORMS,
+        "feature_defaults": FEATURE_DEFAULTS,
+    })
     print("Training Complete.")
     for info, data in train_info.items():
         print(f"  {info}: {data}")

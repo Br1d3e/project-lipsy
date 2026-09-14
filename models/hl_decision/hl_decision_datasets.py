@@ -20,6 +20,8 @@ FEATURES = [
     "mySpeedDurationTicks",
     "myCombo",
     "targetCombo",
+    "myHitPressure",
+    "targetHitPressure",
 
     # resources
     "pearlCooldownTicksRemaining",
@@ -41,6 +43,11 @@ FEATURES = [
     "ticksSinceLastHitLanded",
     "ticksSinceLastPearl",
     "ticksSinceLastEnemyPearl",
+    "hitsLandedLastK",
+    "hitsTakenLastK",
+    "netHitsLastK",
+    "ticksSinceCombat",
+    "ticksInCurrentState",
 
     # space
     "blockDistanceFront",
@@ -59,13 +66,20 @@ FEATURES = [
     'targetPitch',
     'targetDeltaYaw',
     'targetDeltaPitch',
+    "targetRadialVelocity",
+    "targetOutwardVelocity",
+    "targetFacingMeCos",
+    "distanceDelta5",
+    "distanceDelta20",
     "targetEstimatedHp",
     "targetEstimatedPotions",
+    "hitsBeforeTargetHeals",
     "targetHasSpeedPotion",
     "targetSpeedDurationTicks",
     "targetFood",
-    "targetEating",
-    "targetSpeeding",
+    "targetHoldingFood",
+    "targetHoldingSpeedPotion",
+    "targetHoldingHealPotion",
     "targetPearling",
     "targetPotting",
 
@@ -85,6 +99,8 @@ FEATURES = [
     "s_speed",
     "s_eat",
     "s_refill",
+
+    "ping",
 ]
 
 STATES = ["s_attack", "s_heal", "s_pearl", "s_speed", "s_eat", "s_refill"]
@@ -103,20 +119,51 @@ LABELS = ["attack", "heal", "pearl", "speed", "eat", "refill"]
 TARGETS = {"attack": 0, "heal": 1, "pearl": 2, "speed": 3, "eat": 4, "refill": 5}
 RARE_LABELS = ["heal", "pearl", "speed", "eat", "refill"]
 FEATURE_DEFAULTS = {
-    "ticksSinceLastAttack": 100000,
-    "ticksSinceLastBlock": 100000,
-    "ticksSinceLastPot": 100000,
-    "ticksSinceLastEat": 100000,
-    "ticksSinceLastSpeed": 100000,
-    "ticksSinceLastDamageTaken": 100000,
-    "ticksSinceLastHitLanded": 100000,
-    "ticksSinceLastPearl": 100000,
-    "ticksSinceLastEnemyPearl": 100000,
+    "myHp": 20,
+    "myFoodLevel": 20,
+    "myHasSpeedPotion": 1,
+    "mySpeedDurationTicks": 0,
+    "myCombo": 0,
+    "targetCombo": 0,
+    "myHitPressure": 0,
+    "targetHitPressure": 0,
+
+    "pearlCooldownTicksRemaining": 0,
+    "enemyPearlAvailable": 1,
+    "enemyPearlCooldownTicksRemaining": 0,
+    "hotbarHealthPotions": 0,
+    "inventoryFood": 0,
+    "inventorySpeedPotions": 0,
+    "inventoryHealthPotions": 0,
+    "inventoryPearls": 0,
+
+    "ticksSinceLastAttack": -1,
+    "ticksSinceLastBlock": -1,
+    "ticksSinceLastPot": -1,
+    "ticksSinceLastEat": -1,
+    "ticksSinceLastSpeed": -1,
+    "ticksSinceLastDamageTaken": -1,
+    "ticksSinceLastHitLanded": -1,
+    "ticksSinceLastPearl": -1,
+    "ticksSinceLastEnemyPearl": -1,
+    "hitsLandedLastK": 0,
+    "hitsTakenLastK": 0,
+    "netHitsLastK": 0,
+    "ticksSinceCombat": 0,
+    "ticksInCurrentState": 0,
+
     "blockDistanceFront": 50,
     "blockDistanceBack": 50,
     "blockDistanceLeft": 50,
     "blockDistanceRight": 50,
     "targetEstimatedPotions": 29,
+
+    "targetRadialVelocity": 0,
+    "targetOutwardVelocity": 0,
+    "targetFacingMeCos": 0,
+    "distanceDelta5": 0,
+    "distanceDelta20": 0,
+
     "s_attack": 0,
     "s_heal": 0,
     "s_pearl": 0,
@@ -125,7 +172,32 @@ FEATURE_DEFAULTS = {
     "s_refill": 0,
 }
 
+# Plain metadata shared by training and inference. Each rule stores a type,
+# cap, and divisor. Only log1p is enabled; rational rules are not implemented yet.
+# log1p: log1p(min(nonnegative raw value, cap)) / divisor.
+FEATURE_TRANSFORMS = {
+    name: {"type": "log1p", "cap": cap, "divisor": float(np.log1p(cap))}
+    for name, cap in {
+        "ticksSinceLastAttack": 200,
+        "ticksSinceLastBlock": 400,
+        "ticksSinceLastPot": 600,
+        "ticksSinceLastEat": 1200,
+        "ticksSinceLastSpeed": 2000,
+        "ticksSinceLastDamageTaken": 200,
+        "ticksSinceLastHitLanded": 200,
+        "ticksSinceLastPearl": 1200,
+        "ticksSinceLastEnemyPearl": 1200,
+        "ticksSinceCombat": 200,
+        "ticksInCurrentState": 600,
+        "mySpeedDurationTicks": 1800,
+        "targetSpeedDurationTicks": 1800,
+        "pearlCooldownTicksRemaining": 320,
+        "enemyPearlCooldownTicksRemaining": 320,
+    }.items()
+}
+
 AUXILIARY_TARGETS = ["target_pot_soon", "target_pot_urgency"]
+DERIVED_COLS = ["target_pot_soon", "target_pot_urgency", "ticksInCurrentState"]
 
 class HLDecisionDataset:
     label_name = None
@@ -156,17 +228,23 @@ class HLDecisionDataset:
             self.val_frames = self.concatenate_frames(self.val_rounds)
             self.test_frames = self.concatenate_frames(self.test_rounds)
 
+            self.train_frames = self.load_derived_cols(self.train_frames)
+            self.val_frames = self.load_derived_cols(self.val_frames)
+            self.test_frames = self.load_derived_cols(self.test_frames)
+
         if build_cache:
             self.save_pickle_cache(self.train_frames, "train")
             self.save_pickle_cache(self.val_frames, "val")
             self.save_pickle_cache(self.test_frames, "test")
 
-        self.train_frames = self._col_target_pot_soon(self.train_frames)
-        self.val_frames = self._col_target_pot_soon(self.val_frames)
-        self.test_frames = self._col_target_pot_soon(self.test_frames)
+
+        if any(DERIVED_COLS) not in self.train_frames.columns:
+            self.train_frames = self.load_derived_cols(self.train_frames)
+            self.val_frames = self.load_derived_cols(self.val_frames)
+            self.test_frames = self.load_derived_cols(self.test_frames)
 
     def cache_name(self, name):
-        return f"hl_v1_{name}.pickle"
+        return f"hl_v2_{name}.pickle"
 
     def load_pickle_cache(self, name):
         path = os.path.join(self.cache_dir, self.cache_name(name))
@@ -178,6 +256,11 @@ class HLDecisionDataset:
         os.makedirs(self.cache_dir, exist_ok=True)
         path = os.path.join(self.cache_dir, self.cache_name(name))
         frames.reset_index(drop=True).to_pickle(path)
+
+    def load_derived_cols(self, frames: pd.DataFrame):
+        frames = self._col_target_pot_soon(frames)
+        frames = self._col_state_duration(frames)
+        return frames
 
     def _col_labels_states(self, frames: pd.DataFrame, labels) -> pd.DataFrame:
         frames = frames.iloc[np.argsort(frames["recordingTickIndex"].to_numpy())].copy()
@@ -233,21 +316,12 @@ class HLDecisionDataset:
         pot_urgency = np.zeros(len(frames), dtype=np.float32)
 
         for _, round_df in frames.groupby(frames["round_id"], sort=False):
-            round_df = round_df.sort_values("recordingTickIndex", kind="stable")
+            round_df = round_df.iloc[np.argsort(round_df["recordingTickIndex"].to_numpy(), kind="stable")]
             round_idx = frames.index.get_indexer(round_df.index)
             ticks = round_df["recordingTickIndex"].to_numpy()
-            target_exists = round_df["targetExists"].fillna(False).to_numpy(dtype=bool)
-            target_ids = round_df["targetId"].to_numpy()
-            estimated_hp = round_df["targetEstimatedHp"].to_numpy(dtype=np.float64)
+            target_potting = round_df["targetPotting"].to_numpy()
 
-            hp_diff = np.diff(estimated_hp, prepend=np.nan)
-            stable_target = (
-                target_exists &
-                np.concatenate(([False], target_exists[:-1])) &
-                (target_ids == np.concatenate(([np.nan], target_ids[:-1]))) &
-                (ticks == np.concatenate(([ticks[0] - 1], ticks[:-1])) + 1)
-            )
-            start_ticks = ticks[stable_target & (hp_diff > 1.01)]
+            start_ticks = ticks[target_potting == 1]
 
             round_pot_soon = np.zeros(len(round_df), dtype=bool)
             round_pot_urgency = np.zeros(len(round_df), dtype=np.float32)
@@ -269,6 +343,18 @@ class HLDecisionDataset:
 
         frames["target_pot_soon"] = pot_soon_mask
         frames["target_pot_urgency"] = pot_urgency
+
+        return frames
+
+    def _col_state_duration(self, frames: pd.DataFrame):
+        frames = frames.copy()
+        frames["ticksInCurrentState"] = 0
+
+        for _, round_df in frames.groupby(frames["round_id"], sort=False):
+            round_df = round_df.iloc[np.argsort(round_df["recordingTickIndex"].to_numpy(), kind="stable")]
+            tmp = round_df.copy()
+            tmp["segment"] = round_df["label"].ne(round_df["label"].shift()).cumsum()
+            frames.loc[round_df.index, "ticksInCurrentState"] = tmp.groupby("segment").cumcount().to_numpy()
 
         return frames
 
@@ -314,6 +400,26 @@ class HLDecisionDataset:
             size = np.sum(self.label_match_mask(frames, label))
             print(f"{label}: {size} positives. ({size / len(frames) * 100:.2f}%)")
 
+    @staticmethod
+    def normalize_features(frames, transformations=None):
+        """Transform raw features once, preserving missing values for later defaults.
+
+        Inference can pass the checkpoint's feature_transforms dictionary here,
+        then fill its feature_defaults and order columns using its features list.
+        """
+        if transformations is None:
+            transformations = FEATURE_TRANSFORMS
+        frames = frames.copy()
+        for name, rule in transformations.items():
+            if name not in frames.columns:
+                continue
+            if rule["type"] != "log1p":
+                raise ValueError(f"Unsupported feature transformation: {rule['type']}")
+            values = frames[name].astype(float)
+            values = values.where(values >= 0).clip(upper=rule["cap"])
+            frames[name] = np.log1p(values) / rule["divisor"]
+        return frames
+
     def select_X_Y(
             self,
             frames: pd.DataFrame,
@@ -327,7 +433,7 @@ class HLDecisionDataset:
             features = self.feature_list
         if default_features is None:
             default_features = FEATURE_DEFAULTS
-        features_df = frames[features].fillna(default_features)
+        features_df = self.normalize_features(frames[features]).fillna(default_features)
         feature_matrix = features_df.to_numpy(np.float32)
 
         if feature_mask_fn is not None:
@@ -401,7 +507,7 @@ class HLDecisionDataset:
             raise ValueError(f"seq_len must be >= 1, got {seq_len}")
 
         features_df = frames[features].copy() if features is not None else frames.copy()
-        features_df = features_df.fillna(default_features)
+        features_df = self.normalize_features(features_df).fillna(default_features)
 
         targets_value = np.zeros(len(features_df), dtype=np.float32)
         if isinstance(target, int) or isinstance(target, float):
@@ -519,7 +625,7 @@ class HLDecisionDataset:
             mask &= type_mask
         return mask
 
-    def next_state_targets(self, frames, label_name=None, label_type=None):
+    def state_targets(self, frames, label_name=None, label_type=None):
         if label_name is None:
             target = np.full(len(frames), TARGETS["attack"], dtype=np.float32)
             label_values = frames["label"].to_numpy()
@@ -528,13 +634,7 @@ class HLDecisionDataset:
         else:
             target = self.label_match_mask(frames, label_name=label_name, label_type=label_type).astype(np.float32)
 
-        next_target = np.zeros(len(frames), dtype=np.float32)
-        for _, round_df in frames.groupby(frames["round_id"], sort=False):
-            round_idx = frames.index.get_indexer(round_df.index)
-            if len(round_idx) <= 1:
-                continue
-            next_target[round_idx[:-1]] = target[round_idx[1:]]
-        return next_target
+        return target
 
     def candidate_state_mask(
             self,
@@ -794,7 +894,7 @@ class HLDecisionDataset:
             before_transition=transition_context,
             after_transition=after_transition_context,
         )
-        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        targets = self.state_targets(frames, label_name=label_name, label_type=label_type)
         X, Y = self.select_next_X_Y(
             frames=frames,
             features=features,
@@ -849,7 +949,7 @@ class HLDecisionDataset:
             before_transition=transition_context,
             after_transition=after_transition_context,
         )
-        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        targets = self.state_targets(frames, label_name=label_name, label_type=label_type)
         X, Y = self.select_seq_X_Y(
             frames=frames,
             features=features,
@@ -887,7 +987,7 @@ class HLDecisionDataset:
             label_name = self.label_name
         if label_type is None:
             label_type = self.label_type
-        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        targets = self.state_targets(frames, label_name=label_name, label_type=label_type)
         X, Y = self.select_next_X_Y(
             frames=frames,
             features=features,
@@ -915,7 +1015,7 @@ class HLDecisionDataset:
         # if seq_len > transition_context:
             # print(f"Warning: seq_len={seq_len} is greater than transition_context={transition_context}.")
 
-        targets = self.next_state_targets(frames, label_name=label_name, label_type=label_type)
+        targets = self.state_targets(frames, label_name=label_name, label_type=label_type)
         X, Y = self.select_seq_X_Y(
             frames=frames,
             features=features,
@@ -1169,9 +1269,18 @@ class HLDecisionDataset:
 
 
 if __name__ == "__main__":
-    ds = HLDecisionDataset(label_name=None, label_type=None, use_cache=True, build_cache=False)
+    ds = HLDecisionDataset(label_name=None, label_type=None, use_cache=False, build_cache=True)
 
     train_frames = ds.get_train_frames()
+    print(train_frames["ping"])
+    # print(train_frames.columns.tolist())
+    # print(train_frames.head().to_string())
+
+    train_X, train_Y = ds.get_train_X_Y(seq_len=50, return_auxiliary_targets=True)
+    print(train_X.shape)
+
+    quit()
+
     # print(np.unique(train_frames["enemyPearlAvailable"], return_counts=True))
     # print(np.unique(train_frames["enemyPearlCooldownTicksRemaining"], return_counts=True))
     # print(np.unique(train_frames["targetSpeeding"],return_counts=True))

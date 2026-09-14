@@ -4,15 +4,22 @@ import os
 import pandas as pd
 import numpy as np
 
-TRAIN_FOLDER = "/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/My Drive/Project Lipsy - Continued/project-lipsy/recorder-1.7.10/recordings"
+TRAIN_FOLDER = ("/Users/br1d3e/Library/CloudStorage/GoogleDrive-wangwangjiman@gmail.com/"
+                "My Drive/Project Lipsy - Continued/project-lipsy/test/recordings/recorder_v3")
 # TRAIN_FOLDER = os.path.join(FOLDER, "session_1778405758091")
 # TRAIN_FOLDER = os.path.join(FOLDER, "session_1778405079341")
 
 FRAMES_NAME = "frames.jsonl.gz"
 LABELS_NAME = "labels.json"
 EVENTS_NAME = "events.jsonl"
+SESSION_META_NAME = "session_meta.json"
 ROUND_START_TRIM_TICKS = 20
 ROUND_END_TRIM_TICKS = 20
+
+PING_DEFAULTS = {
+    "wihar.cyou": 25,
+    "as.minemen.club": 75,
+}
 
 class Datasets:
     def __init__(self, folder, keep_frames=True, use_cache=False, build_cache=True):
@@ -37,7 +44,7 @@ class Datasets:
                     self.labels.append(session_label)
                     self.rounds.extend(self.split_rounds(session_frame, session_label))
             else:
-                self.frames, self.labels = self.load_folder(folder)     # session frame / labels
+                self.frames, self.labels = self.load_folder(folder)
                 self.rounds = self.split_rounds(self.frames, self.labels)
                 if not self.keep_frames:
                     self.frames = None
@@ -76,7 +83,7 @@ class Datasets:
     def load_folders(self, folder):
         frames = []
         labels = []
-        for session_frames, session_labels, session_events in self.iter_folders(folder):
+        for session_frames, session_labels, session_events, session_meta in self.iter_folders(folder):
             frames.append(session_frames)
             labels.append(session_labels)
 
@@ -109,6 +116,14 @@ class Datasets:
             # session_events = self._read_jsonl(events_path)
             session_events = None
 
+            session_meta_path = os.path.join(session_path, SESSION_META_NAME)
+            if not os.path.exists(session_meta_path):
+                continue
+            with open(session_meta_path, "r") as f:
+                session_meta = json.load(f)
+
+            session_frames = self._col_ping(session_frames, session_meta)
+
             yield session_frames, session_labels, session_events
 
     def load_folder(self, folder):
@@ -123,9 +138,27 @@ class Datasets:
         labels = labels["labels"]
         labels = sorted(labels, key=lambda l: l["start_tick"])
 
+        session_meta_path = os.path.join(folder, SESSION_META_NAME)
+        with open(session_meta_path, "r") as f:
+            session_meta = json.load(f)
+        frames = self._col_ping(frames, session_meta)
+
         return frames, labels
 
+    def _col_ping(self, frames: pd.DataFrame, meta: dict):
+        frames = frames.copy()
+        server_ip = meta.get("serverIp", None)
+        frames["ping"] = -1
+        if server_ip is None:
+            return frames
+
+        if server_ip in PING_DEFAULTS.keys():
+            frames["ping"] = PING_DEFAULTS[server_ip]
+
+        return frames
+
     def split_rounds(self, frames: pd.DataFrame, labels=None):
+        # Round boundary detection proxy (when recorderRoundId is unavailable):
         # Round start: player holds fire resistance before entering the match.
         # Round end: servers put item.paper in the hotbar as the play-again item.
         rounds = []
@@ -134,6 +167,22 @@ class Datasets:
 
         frames = frames.sort_values("recordingTickIndex").reset_index(drop=True)
         ticks = frames["recordingTickIndex"].astype(int)
+
+        if "recorderRoundId" in frames.columns:
+            for _, round_df in frames.groupby("recorderRoundId"):
+                # Trim round end after last presence of paper in hotbar
+                hotbars = round_df["hotbar"].map(self.hotbar_to_text)
+                has_play_again_paper = hotbars.str.contains("item.paper", regex=False).to_numpy(bool)
+
+                if has_play_again_paper.sum() > 0:
+                    last_paper_presence = np.argwhere(has_play_again_paper == 1).max()
+                    round_df = round_df[:last_paper_presence]
+
+                round_df.attrs["labels"] = labels or []
+                rounds.append(round_df)
+
+            return rounds
+
         held_items = frames.get("myHeldItem", pd.Series("", index=frames.index)).fillna("").astype(str).str.lower()
         held_types = frames.get("myHeldItemType", pd.Series("", index=frames.index)).fillna("").astype(str).str.lower()
         hotbars = frames.get("hotbar", pd.Series("", index=frames.index)).map(self.hotbar_to_text)
