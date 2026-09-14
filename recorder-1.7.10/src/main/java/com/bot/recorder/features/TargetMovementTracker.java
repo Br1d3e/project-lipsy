@@ -3,11 +3,10 @@ package com.bot.recorder.features;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
-/** Horizontal movement in blocks per tick, derived from continuous position samples. */
+/** Horizontal movement in blocks per tick. The recorder resets history on round or observation changes. */
 public class TargetMovementTracker {
     private static final int VELOCITY_WINDOW = 5;
     private static final int LONG_DISTANCE_WINDOW = 20;
-    private static final double MAX_STEP_SQUARED = 16.0D;
     private final Deque<Sample> history = new ArrayDeque<Sample>();
     private Double radialVelocity;
     private Double outwardVelocity;
@@ -20,14 +19,8 @@ public class TargetMovementTracker {
         radialVelocity = outwardVelocity = facingMeCos = distanceDelta5 = distanceDelta20 = null;
     }
 
-    public void update(int tick, int entityId, double myX, double myZ, double targetX, double targetZ, float targetYaw) {
-        Sample current = new Sample(tick, entityId, myX, myZ, targetX, targetZ);
-        Sample previous = history.peekLast();
-        if (previous != null && (tick != previous.tick + 1 || entityId != previous.entityId
-                || squared(myX - previous.myX, myZ - previous.myZ) > MAX_STEP_SQUARED
-                || squared(targetX - previous.targetX, targetZ - previous.targetZ) > MAX_STEP_SQUARED)) {
-            reset();
-        }
+    public void update(int tick, double myX, double myZ, double targetX, double targetZ, float targetYaw) {
+        Sample current = new Sample(tick, myX, myZ, targetX, targetZ);
         radialVelocity = outwardVelocity = distanceDelta5 = distanceDelta20 = null;
         double dx = targetX - myX;
         double dz = targetZ - myZ;
@@ -64,11 +57,10 @@ public class TargetMovementTracker {
     public Double getDistanceDelta20() { return distanceDelta20; }
 
     private static class Sample {
-        final int tick, entityId;
+        final int tick;
         final double myX, myZ, targetX, targetZ, distance;
-        Sample(int tick, int entityId, double myX, double myZ, double targetX, double targetZ) {
+        Sample(int tick, double myX, double myZ, double targetX, double targetZ) {
             this.tick = tick;
-            this.entityId = entityId;
             this.myX = myX;
             this.myZ = myZ;
             this.targetX = targetX;

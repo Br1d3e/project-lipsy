@@ -33,8 +33,6 @@ import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
 import net.minecraft.network.play.client.C09PacketHeldItemChange;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
-import net.minecraft.network.play.server.S08PacketPlayerPosLook;
-import net.minecraft.network.play.server.S18PacketEntityTeleport;
 import net.minecraft.network.play.server.S13PacketDestroyEntities;
 import net.minecraft.network.play.server.S28PacketEffect;
 import net.minecraft.potion.Potion;
@@ -46,11 +44,11 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
-@Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "3.0")
+@Mod(modid = "projectlipsy", name = "Project Lipsy Recorder", version = "3.1")
 public class Recorder {
 
     private final Minecraft mc = Minecraft.getMinecraft();
-    private static final String RECORDER_VERSION = "v5";
+    private static final String RECORDER_VERSION = "v3";
     private static final int PEARL_COOLDOWN_TICKS = 320;
     private static final int WALL_CHECK_DISTANCE = 5;
     private static final int INVENTORY_SAMPLE_INTERVAL_TICKS = 5;
@@ -231,7 +229,7 @@ public class Recorder {
         if (previousSelfHp != null && selfHp > previousSelfHp) combatHistory.selfHealed(currentTick);
         previousSelfHp = selfHp;
         if (target != null) {
-            targetMovement.update(currentTick, target.getEntityId(), mc.thePlayer.posX, mc.thePlayer.posZ,
+            targetMovement.update(currentTick, mc.thePlayer.posX, mc.thePlayer.posZ,
                     target.posX, target.posZ, target.rotationYaw);
         }
         targetHitTracker.updateTarget(target == null ? -1 : target.getEntityId());
@@ -792,14 +790,7 @@ public class Recorder {
     private synchronized void handleIncomingPacket(Packet packet, int tick) {
         if (!recording) return;
 
-        if (packet instanceof S08PacketPlayerPosLook) {
-            targetMovement.reset();
-        } else if (packet instanceof S18PacketEntityTeleport) {
-            EntityPlayer target = findClosestPlayer();
-            if (target != null && target.getEntityId() == ((S18PacketEntityTeleport) packet).func_149451_c()) {
-                targetMovement.reset();
-            }
-        } else if (packet instanceof S12PacketEntityVelocity) {
+        if (packet instanceof S12PacketEntityVelocity) {
             handleEntityVelocityPacket((S12PacketEntityVelocity) packet, tick);
         } else if (packet instanceof S28PacketEffect) {
             handleEffectPacket((S28PacketEffect) packet, tick);
