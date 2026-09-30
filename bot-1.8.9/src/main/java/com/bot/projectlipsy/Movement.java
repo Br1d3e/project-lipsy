@@ -27,7 +27,8 @@ public class Movement {
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
 
         utils.updateCombos(target);
-        if (mc.thePlayer.getDistanceToEntity(target) <= 6 || !predictWtap(actions)) {
+//        if (mc.thePlayer.getDistanceToEntity(target) <= 6 || !predictWtap(actions)) {
+        if (mc.thePlayer.getDistanceToEntity(target) <= 6) {
             wtap(target);
         }
         predictStrafe(actions);

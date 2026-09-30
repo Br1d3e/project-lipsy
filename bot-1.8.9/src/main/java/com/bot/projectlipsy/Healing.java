@@ -6,6 +6,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.projectile.EntityPotion;
 import net.minecraft.potion.Potion;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.MathHelper;
 
 import java.util.HashSet;
@@ -20,6 +21,7 @@ public class Healing {
     private final Retreat retreat;
     private long lastPotTime = 0;
     private static final int MAX_UTILITY_USE_TICKS = 50;
+    private static final int MAX_HEAL_SEQUENCE_TICKS = 40;
 
     public enum HealingState {
         NONE,
@@ -71,6 +73,7 @@ public class Healing {
             stopUtilityUse();
             potState = HealingState.TURNING;
             potTicks = 0;
+            resetScores();
             waitingForCurrentPotExplosion = false;
             currentPotExploded = false;
             currentPotEntityIds.clear();
@@ -150,32 +153,43 @@ public class Healing {
     }
 
     public void updatePotMacro(EntityPlayer target) {
-        if (potState == HealingState.NONE || target == null || mc.thePlayer == null) return;
+        if (potState == HealingState.NONE) return;
+        if (target == null || mc.thePlayer == null || mc.theWorld == null) {
+            stopPotting();
+            return;
+        }
 
         updateBotPotionHistory();
-        potTicks ++;
-
-        utils.updateCombos(target);
-        updateHealScores(target);
-        computeProbabilities();
+        potTicks++;
+        if (potTicks >= MAX_HEAL_SEQUENCE_TICKS
+                || (potState == HealingState.TURNING && !hasHotbarHealingPotion())) {
+            // A throw can be rejected, or its entity can spawn and disappear between client ticks.
+            lastPotTime = System.currentTimeMillis();
+            stopPotting();
+            return;
+        }
 
         if (potTicks == 1) {
+            utils.updateCombos(target);
+            updateHealScores(target);
+            computeProbabilities();
+
             mc.thePlayer.sendChatMessage(
                     "turnProb: " + String.format("%.2f", turnProb) +
                             "frontProb: " + String.format("%.2f", frontProb) +
                             "fastProb: " + String.format("%.2f", fastProb)
             );
-        }
 
-        if (fastProb >= 0.40D) {
-            potMode = HealingMode.FAST;
-            resetScores();
-        } else if (frontProb >= 0.38D) {
-            potMode = HealingMode.FRONT;
-            resetScores();
-        } else {
-            potMode = HealingMode.TURN;
-            resetScores();
+            if (fastProb >= 0.40D) {
+                potMode = HealingMode.FAST;
+                resetScores();
+            } else if (frontProb >= 0.38D) {
+                potMode = HealingMode.FRONT;
+                resetScores();
+            } else {
+                potMode = HealingMode.TURN;
+                resetScores();
+            }
         }
 
         if (potMode == HealingMode.TURN) {
@@ -316,12 +330,23 @@ public class Healing {
         currentPotExploded = false;
         currentPotEntityIds.clear();
         KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), false);
+        KeyBinding.setKeyBindState(mc.gameSettings.keyBindJump.getKeyCode(), false);
+    }
+
+    private boolean hasHotbarHealingPotion() {
+        if (mc.thePlayer == null) return false;
+        for (int slot = 0; slot < 9; slot++) {
+            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(slot);
+            if (stack != null && stack.getDisplayName().contains("Splash Potion of Healing")) return true;
+        }
+        return false;
     }
 
     public boolean canPot() {
         long currentTime = System.currentTimeMillis();
         long potInterval = 600;
-        return utils.hasItem("Splash Potion of Healing") && currentTime - lastPotTime >= potInterval;
+        return hasHotbarHealingPotion() && currentTime - lastPotTime >= potInterval;
     }
 
     public boolean canEat() {

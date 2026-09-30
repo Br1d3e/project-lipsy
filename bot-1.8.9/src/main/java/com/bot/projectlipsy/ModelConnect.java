@@ -1,6 +1,9 @@
 package com.bot.projectlipsy;
 
 import net.minecraft.client.Minecraft;
+import com.bot.projectlipsy.features.HLFeatureTracker;
+import com.bot.projectlipsy.features.ServerPingConfig;
+import java.io.File;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.potion.Potion;
@@ -13,9 +16,8 @@ import java.util.Locale;
 public class ModelConnect {
     private static final String MODEL_HOST = "127.0.0.1";
     private static final int MODEL_PORT = 33333;
-    public static final int WTAP_ACTION_INDEX = 8;
+    public static final int WTAP_ACTION_INDEX = 5;
     private static final long RETRY_DELAY_MS = 2000L;
-    private static final int FAR_TICKS = 100000;
     private static final int PEARL_COOLDOWN_TICKS = 320;
 
     private static final int myMotionX = 0;
@@ -101,10 +103,29 @@ public class ModelConnect {
     private static final int s_speed = 80;
     private static final int s_eat = 81;
     private static final int s_refill = 82;
-    private static final int BATCH_SIZE = 83;
+    private static final int myHitPressure = 83;
+    private static final int targetHitPressure = 84;
+    private static final int hitsLandedLastK = 85;
+    private static final int hitsTakenLastK = 86;
+    private static final int netHitsLastK = 87;
+    private static final int ticksSinceCombat = 88;
+    private static final int ticksInCurrentState = 89;
+    private static final int targetRadialVelocity = 90;
+    private static final int targetOutwardVelocity = 91;
+    private static final int targetFacingMeCos = 92;
+    private static final int distanceDelta5 = 93;
+    private static final int distanceDelta20 = 94;
+    private static final int hitsBeforeTargetHeals = 95;
+    private static final int targetHoldingFood = 96;
+    private static final int targetHoldingSpeedPotion = 97;
+    private static final int targetHoldingHealPotion = 98;
+    private static final int ping = 99;
+    private static final int BATCH_SIZE = 100;
 
     private final Minecraft mc;
     private final utils utils;
+    private final ServerPingConfig pingConfig = new ServerPingConfig();
+    private final HLFeatureTracker features;
     private final float[] batch = new float[BATCH_SIZE];
     private float[] actions = null;
     private ModelClient modelClient;
@@ -115,15 +136,14 @@ public class ModelConnect {
     private Float previousTargetYaw = null;
     private Float previousTargetPitch = null;
     private int tickIndex = 0;
-    private int lastAttackTick = -FAR_TICKS;
-    private int lastBlockTick = -FAR_TICKS;
-    private int lastPotTick = -FAR_TICKS;
-    private int lastEatTick = -FAR_TICKS;
-    private int lastSpeedTick = -FAR_TICKS;
-    private int lastDamageTakenTick = -FAR_TICKS;
-    private int lastHitLandedTick = -FAR_TICKS;
-    private int lastPearlTick = -FAR_TICKS;
-    private int lastEnemyPearlTick = -FAR_TICKS;
+    private int lastAttackTick = -1;
+    private int lastBlockTick = -1;
+    private int lastPotTick = -1;
+    private int lastEatTick = -1;
+    private int lastSpeedTick = -1;
+    private int lastDamageTakenTick = -1;
+    private int lastHitLandedTick = -1;
+    private int lastPearlTick = -1;
     private float previousSwingProgress = 0.0F;
     private int previousTargetHurtTime = 0;
     private String decisionState = "attack";
@@ -131,24 +151,36 @@ public class ModelConnect {
     public ModelConnect(Minecraft mc) {
         this.mc = mc;
         this.utils = new utils(mc);
+        pingConfig.load(new File(mc.mcDataDir, "config/projectlipsy-features.cfg"));
+        features = new HLFeatureTracker(mc);
     }
 
     public void setDecisionState(String state) {
         if (state == null) return;
         this.decisionState = state.toLowerCase(Locale.US);
+        features.setDecisionState(this.decisionState, tickIndex);
     }
 
     public void sendObs(EntityPlayer target) {
+        tickIndex++;
+        if (target != null && target.isInvisible()) target = null;
+        if (features.update(target, tickIndex)) {
+            decisionState = "attack";
+            previousTargetYaw = previousTargetPitch = null;
+            previousTargetHurtTime = target == null ? 0 : target.hurtTime;
+            lastAttackTick = lastBlockTick = lastPotTick = lastEatTick = lastSpeedTick = -1;
+            lastDamageTakenTick = lastHitLandedTick = lastPearlTick = -1;
+            utils.resetCombos(target);
+        }
         if (mc.thePlayer == null || target == null) {
             actions = null;
             return;
         }
+        utils.updateCombos(target);
         if (!ensureConnected()) {
             actions = null;
             return;
         }
-        tickIndex++;
-
         double relX = target.posX - mc.thePlayer.posX;
         double relY = target.posY + target.getEyeHeight() - (mc.thePlayer.posY + mc.thePlayer.getEyeHeight());
         double relZ = target.posZ - mc.thePlayer.posZ;
@@ -177,7 +209,7 @@ public class ModelConnect {
         }
         previousSwingProgress = mc.thePlayer.swingProgress;
 
-        if (mc.thePlayer.hurtTime == 10 || mc.thePlayer.hurtTime > 0 && ticksSince(lastDamageTakenTick) > 10) {
+        if (mc.thePlayer.hurtTime == 10 || mc.thePlayer.hurtTime > 0 && (lastDamageTakenTick < 0 || ticksSince(lastDamageTakenTick) > 10)) {
             lastDamageTakenTick = tickIndex;
         }
         if (target.hurtTime > previousTargetHurtTime) {
@@ -191,7 +223,6 @@ public class ModelConnect {
         ItemStack held = mc.thePlayer.getHeldItem();
         utils.ItemSnapshot inventory = snapshotInventory();
         updateUseTimers(held, useItemDown, holdingSword);
-        updateEnemyUseTimers(target);
 
         int strafeAction = mc.gameSettings.keyBindRight.isKeyDown() ? 1 : (mc.gameSettings.keyBindLeft.isKeyDown() ? -1 : 0);
         boolean crosshairIsTarget = mc.objectMouseOver != null
@@ -201,8 +232,8 @@ public class ModelConnect {
         int speedDuration = utils.potionDuration(mc.thePlayer, Potion.moveSpeed);
         int targetSpeedDuration = utils.potionDuration(target, Potion.moveSpeed);
         float targetHp = target.getHealth();
-        int pearlCooldown = Math.max(0, PEARL_COOLDOWN_TICKS - ticksSince(lastPearlTick));
-        int enemyPearlCooldown = Math.max(0, PEARL_COOLDOWN_TICKS - ticksSince(lastEnemyPearlTick));
+        int pearlCooldown = lastPearlTick < 0 ? 0 : Math.max(0, PEARL_COOLDOWN_TICKS - ticksSince(lastPearlTick));
+        int enemyPearlCooldown = features.getEnemyPearlCooldown();
 
         put(myMotionX, mc.thePlayer.motionX);
         put(myMotionY, mc.thePlayer.motionY);
@@ -225,7 +256,7 @@ public class ModelConnect {
         put(myCombo, utils.getMyCombo());
         put(targetCombo, utils.getTargetCombo());
         put(pearlCooldownTicksRemaining, pearlCooldown);
-        put(enemyPearlAvailable, utils.isPearl(target.getHeldItem()) && enemyPearlCooldown == 0);
+        put(enemyPearlAvailable, enemyPearlCooldown == 0);
         put(enemyPearlCooldownTicksRemaining, enemyPearlCooldown);
         put(hotbarHealthPotions, inventory.hotbarHealthPotions);
         put(inventoryFood, inventory.food);
@@ -241,7 +272,8 @@ public class ModelConnect {
         put(ticksSinceLastDamageTaken, ticksSince(lastDamageTakenTick));
         put(ticksSinceLastHitLanded, ticksSince(lastHitLandedTick));
         put(ticksSinceLastPearl, ticksSince(lastPearlTick));
-        put(ticksSinceLastEnemyPearl, ticksSince(lastEnemyPearlTick));
+        Integer enemyPearlTicks = features.getTicksSinceLastEnemyPearl(tickIndex);
+        put(ticksSinceLastEnemyPearl, enemyPearlTicks == null ? -1 : enemyPearlTicks);
         put(blockDistanceFront, utils.blockDistanceAtYaw(mc.thePlayer.rotationYaw));
         put(blockDistanceBack, utils.blockDistanceAtYaw(mc.thePlayer.rotationYaw + 180.0F));
         put(blockDistanceLeft, utils.blockDistanceAtYaw(mc.thePlayer.rotationYaw - 90.0F));
@@ -262,26 +294,44 @@ public class ModelConnect {
         put(targetDeltaYaw, targetYawDelta);
         put(targetDeltaPitch, targetPitchDelta);
         put(targetEstimatedHp, targetHp);
-        put(targetEstimatedPotions, 29);
-        put(targetEstimatedPearls, 16);
+        put(targetEstimatedPotions, features.getTargetEstimatedPotions());
+        put(targetEstimatedPearls, features.getTargetEstimatedPearls());
         put(targetHurtTime, target.hurtTime);
         put(targetSwingProgress, target.swingProgress);
         put(targetUsingItem, target.isUsingItem());
         put(targetHasSpeedPotion, targetSpeedDuration > 0);
         put(targetSpeedDurationTicks, targetSpeedDuration);
         put(targetFood, target.getFoodStats().getFoodLevel());
-        put(targetEating, target.isUsingItem() && utils.isFood(target.getHeldItem()));
-        put(targetSpeeding, target.isUsingItem() && utils.isSpeedPotion(target.getHeldItem()));
-        put(targetPearling, utils.isPearl(target.getHeldItem()));
-        put(targetPotting, target.isUsingItem() && utils.isHealthPotion(target.getHeldItem()));
+        put(targetEating, features.holdingFood(target));
+        put(targetSpeeding, features.holdingSpeed(target));
+        put(targetPearling, features.isTargetPearling());
+        put(targetPotting, features.isTargetPotting());
         put(yawDiffToTarget, yawDiff);
         put(pitchDiffToTarget, pitchDiff);
         put(hpDiff, targetHp - mc.thePlayer.getHealth());
-        put(canHeal, inventory.healthPotions > 0 && ticksSince(lastPotTick) > 12);
+        put(canHeal, inventory.healthPotions > 0 && mc.thePlayer.getHealth() < 15);
         put(canPearl, inventory.pearls > 0 && pearlCooldown == 0);
-        put(canSpeed, inventory.speedPotions > 0 && speedDuration < 20 * 20);
+        put(canSpeed, inventory.speedPotions > 0);
         put(canEat, inventory.food > 0 && mc.thePlayer.getFoodStats().getFoodLevel() < 20);
         putStateFeatures();
+        put(myHitPressure, features.combat.getMyPressure());
+        put(targetHitPressure, features.combat.getTargetPressure());
+        put(hitsLandedLastK, features.combat.getHitsLanded());
+        put(hitsTakenLastK, features.combat.getHitsTaken());
+        put(netHitsLastK, features.combat.getNetHits());
+        Integer combatTicks = features.combat.getTicksSinceCombat(tickIndex);
+        put(ticksSinceCombat, combatTicks == null ? 0 : combatTicks);
+        put(ticksInCurrentState, features.getTicksInCurrentState(tickIndex));
+        putOrDefault(targetRadialVelocity, features.movement.getRadialVelocity());
+        putOrDefault(targetOutwardVelocity, features.movement.getOutwardVelocity());
+        putOrDefault(targetFacingMeCos, features.movement.getFacingMeCos());
+        putOrDefault(distanceDelta5, features.movement.getDistanceDelta5());
+        putOrDefault(distanceDelta20, features.movement.getDistanceDelta20());
+        put(hitsBeforeTargetHeals, features.getHitsBeforeTargetHeals());
+        put(targetHoldingFood, features.holdingFood(target));
+        put(targetHoldingSpeedPotion, features.holdingSpeed(target));
+        put(targetHoldingHealPotion, features.holdingHeal(target));
+        put(ping, pingConfig.pingFor(mc.getCurrentServerData() == null ? null : mc.getCurrentServerData().serverIP));
 
         try {
             modelClient.sendPacket(batch);
@@ -321,12 +371,6 @@ public class ModelConnect {
             lastSpeedTick = tickIndex;
         } else if (utils.isFood(held)) {
             lastEatTick = tickIndex;
-        }
-    }
-
-    private void updateEnemyUseTimers(EntityPlayer target) {
-        if (utils.isPearl(target.getHeldItem())) {
-            lastEnemyPearlTick = tickIndex;
         }
     }
 
@@ -383,6 +427,11 @@ public class ModelConnect {
         return snapshot;
     }
 
+    private void putOrDefault(int index, Double value) {
+        // Recorder nulls use these same zero defaults in the HL dataset.
+        put(index, value == null ? 0.0D : value);
+    }
+
     private void put(int index, double value) {
         batch[index] = (float) value;
     }
@@ -392,6 +441,6 @@ public class ModelConnect {
     }
 
     private int ticksSince(int tick) {
-        return tickIndex - tick;
+        return tick < 0 ? -1 : tickIndex - tick;
     }
 }

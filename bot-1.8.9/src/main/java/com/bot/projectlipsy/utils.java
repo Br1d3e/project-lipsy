@@ -18,10 +18,16 @@ public class utils {
     private int lastMyHurtTime = 0;
     private int lastTargetHurtTime = 0;
     private static final int WALL_CHECK_MAX_DISTANCE = 5;
-    private static final float NO_WALL_DISTANCE = 100.0F;
+    private static final float NO_WALL_DISTANCE = 50.0F;
 
 
     public utils(Minecraft mc) {this.mc = mc; }
+
+    public void resetCombos(EntityPlayer target) {
+        myCombo = targetCombo = 0;
+        lastMyHurtTime = mc.thePlayer == null ? 0 : mc.thePlayer.hurtTime;
+        lastTargetHurtTime = target == null ? 0 : target.hurtTime;
+    }
 
     public void updateCombos(EntityPlayer target) {
         if (target.hurtTime > lastTargetHurtTime) {

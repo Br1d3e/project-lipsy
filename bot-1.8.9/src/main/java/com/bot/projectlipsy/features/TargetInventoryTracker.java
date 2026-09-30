@@ -1,0 +1,152 @@
+package com.bot.projectlipsy.features;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.item.EntityEnderPearl;
+import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.entity.projectile.EntityPotion;
+import net.minecraft.init.Items;
+import net.minecraft.item.ItemPotion;
+import net.minecraft.potion.Potion;
+import net.minecraft.potion.PotionEffect;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+public class TargetInventoryTracker {
+
+    private final Minecraft mc;
+
+    private final int TARGET_POTIONS_DEFAULT = 29;
+    private final int TARGET_PEARLS_DEFAULT = 16;
+
+    private int targetPotions;
+    private int targetPearls;
+    private final Set<Integer> seenTargetPotionEntityIds = new HashSet<Integer>();
+    private final Set<Integer> seenTargetPearlEntityIds = new HashSet<Integer>();
+
+    public TargetInventoryTracker(Minecraft mc) {
+        this.mc = mc;
+        reset();
+    }
+
+    public void reset() {
+        targetPotions = TARGET_POTIONS_DEFAULT;
+        targetPearls = TARGET_PEARLS_DEFAULT;
+        seenTargetPotionEntityIds.clear();
+        seenTargetPearlEntityIds.clear();
+    }
+
+    public boolean trackHealthPotions(EntityPlayer target) {
+        if (target == null || mc.theWorld == null) return false;
+        boolean detectedThrow = false;
+
+        for (Object entityObject : mc.theWorld.loadedEntityList) {
+            if (!(entityObject instanceof EntityPotion)) continue;
+
+            EntityPotion potion = (EntityPotion) entityObject;
+            int potionId = potion.getEntityId();
+            if (seenTargetPotionEntityIds.contains(potionId)) continue;
+            if (!isTargetHealingPotion(potion, target)) continue;
+
+            seenTargetPotionEntityIds.add(potionId);
+            detectedThrow = true;
+            if (targetPotions > 0) {
+                targetPotions--;
+            }
+        }
+        return detectedThrow;
+    }
+
+    public boolean trackPearls(EntityPlayer target) {
+        if (target == null || mc.theWorld == null) return false;
+        boolean detectedThrow = false;
+
+        for (Object entityObject : mc.theWorld.loadedEntityList) {
+            if (!(entityObject instanceof EntityEnderPearl)) continue;
+
+            EntityEnderPearl pearl = (EntityEnderPearl) entityObject;
+            int pearlId = pearl.getEntityId();
+            if (seenTargetPearlEntityIds.contains(pearlId)) continue;
+            if (!isTargetPearl(pearl, target)) continue;
+
+            seenTargetPearlEntityIds.add(pearlId);
+            detectedThrow = true;
+            if (targetPearls > 0) {
+                targetPearls--;
+            }
+        }
+        return detectedThrow;
+    }
+
+    public int getTargetHealthPotions() {
+        return targetPotions;
+    }
+
+    public int getTargetPearls() {
+        return targetPearls;
+    }
+
+    private boolean isTargetHealingPotion(EntityPotion potion, EntityPlayer target) {
+        if (!isInstantHealthIISplashPotion(potion)) return false;
+
+        Entity thrower = potion.getThrower();
+        if (thrower == mc.thePlayer) return false;
+        if (thrower == target) return true;
+        if (thrower != null) return false;
+
+        if (potion.ticksExisted > 5) return false;
+
+        double targetDistance = target.getDistanceToEntity(potion);
+        if (targetDistance > 4.0D) return false;
+
+        if (mc.thePlayer != null) {
+            double selfDistance = mc.thePlayer.getDistanceToEntity(potion);
+            if (selfDistance + 0.5D < targetDistance) return false;
+        }
+
+        return true;
+    }
+
+    private boolean isTargetPearl(EntityEnderPearl pearl, EntityPlayer target) {
+        Entity thrower = pearl.getThrower();
+        if (thrower == mc.thePlayer) return false;
+        if (thrower == target) return true;
+        if (thrower != null) return false;
+
+        if (pearl.ticksExisted > 5) return false;
+
+        double targetDistance = target.getDistanceToEntity(pearl);
+        if (targetDistance > 4.0D) return false;
+
+        if (mc.thePlayer != null) {
+            double selfDistance = mc.thePlayer.getDistanceToEntity(pearl);
+            if (selfDistance + 0.5D < targetDistance) return false;
+        }
+
+        return true;
+    }
+
+    private boolean isInstantHealthIISplashPotion(EntityPotion potion) {
+        return isInstantHealthIISplashPotion(potion.getPotionDamage());
+    }
+
+    private boolean isInstantHealthIISplashPotion(int potionDamage) {
+        if (!ItemPotion.isSplash(potionDamage)) return false;
+
+        List effects = Items.potionitem.getEffects(potionDamage);
+        if (effects == null) return false;
+
+        for (Object effectObject : effects) {
+            if (!(effectObject instanceof PotionEffect)) continue;
+
+            PotionEffect effect = (PotionEffect) effectObject;
+            if (effect.getPotionID() == Potion.heal.id && effect.getAmplifier() >= 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}

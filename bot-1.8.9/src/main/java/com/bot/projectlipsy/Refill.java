@@ -119,7 +119,7 @@ public class Refill {
         return true;
     }
 
-    private void stopRefilling() {
+    public void stopRefilling() {
         refilling = false;
     }
 
@@ -172,7 +172,7 @@ public class Refill {
     }
 
     private int nextRefillTicks() {
-        return (int) Math.floor(Math.random() * 3.5D) + 3;
+        return (int) Math.floor(Math.random() * 2.5D) + 1;
     }
 
     private boolean tickRefillDelay() {
