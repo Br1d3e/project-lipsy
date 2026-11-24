@@ -18,7 +18,7 @@ class HLMultiTaskDataset(Dataset):
     def __init__(self, X, Y):
         self.X = torch.as_tensor(X, dtype=torch.float32)
         self.Y = {
-            key: torch.as_tensor(val, dtype=torch.float32)
+            key: torch.as_tensor(val, dtype=torch.int64 if key in ("round_id", "target_tick") else torch.float32)
             for key, val in Y.items()
         }
         for key, value in self.Y.items():

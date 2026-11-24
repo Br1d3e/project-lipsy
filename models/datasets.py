@@ -18,7 +18,7 @@ ROUND_END_TRIM_TICKS = 20
 
 PING_DEFAULTS = {
     "wihar.cyou": 25,
-    "as.minemen.club": 75,
+    "as.minemen.club": 65,
 }
 
 class Datasets:
@@ -233,7 +233,7 @@ class Datasets:
         if round_len == 2:
             return rounds[:1], [], rounds[1:]
 
-        train_len = int(round_len * 0.80)
+        train_len = int(round_len * 0.75)
         val_len = max(1, int(round_len * 0.10))
         if train_len + val_len >= round_len:
             train_len = round_len - 2

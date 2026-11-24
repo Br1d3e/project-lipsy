@@ -18,6 +18,7 @@ BLOCKHIT_DIR = os.path.join(BASE_DIR, "blockhit")
 HL_DIR = os.path.join(BASE_DIR, "hl_decision")
 HEAL_TRIGGER_DIR = os.path.join(HL_DIR, "heal_trigger")
 PEARL_TRIGGER_DIR = os.path.join(HL_DIR, "pearl_trigger")
+HL_MODEL_DIR = os.path.join(HL_DIR, "models")
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, AIM_DIR)
 sys.path.insert(0, STRAFE_DIR)
@@ -25,6 +26,7 @@ sys.path.insert(0, WTAP_DIR)
 sys.path.insert(0, BLOCKHIT_DIR)
 sys.path.insert(0, HEAL_TRIGGER_DIR)
 sys.path.insert(0, PEARL_TRIGGER_DIR)
+sys.path.insert(0, HL_MODEL_DIR)
 
 from aim.train_aim_model import Aim1dCNN, AimGRU, AimLSTM, AimSimpleMLP, AimStackedMLP
 from aim.train_aim_model import SEQ_LEN as AIM_SEQ_LEN
@@ -47,6 +49,9 @@ from hl_decision.pearl_trigger.train_pearl_trigger_model import PearlTriggerLSTM
 
 if not os.path.exists(PEARL_TRIGGER_MODEL_PATH):
     PEARL_TRIGGER_MODEL_PATH = os.path.join(PEARL_TRIGGER_DIR, "pearl_trigger_xgb_4.json")
+
+from hl_decision.train_hl_decision_model import HLMultihead, FEATURE_TRANSFORMS, SEQ_LEN as HL_SEQ_LEN
+HL_MODEL_PATH = os.path.join(HL_MODEL_DIR, "hl_multihead_21_heal.pt")
 
 import xgboost as xgb
 
@@ -136,6 +141,23 @@ OBS_FEATURES = [
     "s_speed",
     "s_eat",
     "s_refill",
+    'myHitPressure',
+    'targetHitPressure',
+    'hitsLandedLastK',
+    'hitsTakenLastK',
+    'netHitsLastK',
+    'ticksSinceCombat',
+    'ticksInCurrentState',
+    'targetRadialVelocity',
+    'targetOutwardVelocity',
+    'targetFacingMeCos',
+    'distanceDelta5',
+    'distanceDelta20',
+    'hitsBeforeTargetHeals',
+    'targetHoldingFood',
+    'targetHoldingSpeedPotion',
+    'targetHoldingHealPotion',
+    'ping',
 ]
 OBS_INDEX = {name: i for i, name in enumerate(OBS_FEATURES)}
 OBS_SIZE = len(OBS_FEATURES)
@@ -150,6 +172,8 @@ HL_DECISION_FEATURES = [
     "mySpeedDurationTicks",
     "myCombo",
     "targetCombo",
+    "myHitPressure",
+    "targetHitPressure",
     "pearlCooldownTicksRemaining",
     "enemyPearlAvailable",
     "enemyPearlCooldownTicksRemaining",
@@ -167,27 +191,39 @@ HL_DECISION_FEATURES = [
     "ticksSinceLastHitLanded",
     "ticksSinceLastPearl",
     "ticksSinceLastEnemyPearl",
+    "hitsLandedLastK",
+    "hitsTakenLastK",
+    "netHitsLastK",
+    "ticksSinceCombat",
+    # "ticksInCurrentState",
     "blockDistanceFront",
     "blockDistanceBack",
     "blockDistanceLeft",
     "blockDistanceRight",
     "targetExists",
     "targetDistance",
-    "targetRelX",
-    "targetRelZ",
+    'targetRelX',
+    'targetRelZ',
     "targetMotionX",
     "targetMotionZ",
-    "targetYaw",
-    "targetPitch",
-    "targetDeltaYaw",
-    "targetDeltaPitch",
+    'targetYaw',
+    'targetPitch',
+    'targetDeltaYaw',
+    'targetDeltaPitch',
+    "targetRadialVelocity",
+    "targetOutwardVelocity",
+    "targetFacingMeCos",
+    "distanceDelta5",
+    "distanceDelta20",
     "targetEstimatedHp",
     "targetEstimatedPotions",
+    "hitsBeforeTargetHeals",
     "targetHasSpeedPotion",
     "targetSpeedDurationTicks",
     "targetFood",
-    "targetEating",
-    "targetSpeeding",
+    "targetHoldingFood",
+    "targetHoldingSpeedPotion",
+    "targetHoldingHealPotion",
     "targetPearling",
     "targetPotting",
     "hpDiff",
@@ -195,12 +231,13 @@ HL_DECISION_FEATURES = [
     "canPearl",
     "canSpeed",
     "canEat",
-    "s_attack",
-    "s_heal",
-    "s_pearl",
-    "s_speed",
-    "s_eat",
-    "s_refill",
+    # "s_attack",
+    # "s_heal",
+    # "s_pearl",
+    # "s_speed",
+    # "s_eat",
+    # "s_refill",
+    "ping",
 ]
 HL_DECISION_FEATURE_SIZE = len(HL_DECISION_FEATURES)
 AIM_ACTION_SIZE = 2
@@ -212,6 +249,7 @@ PEARL_TRIGGER_ACTION_SIZE = 2
 ACTION_SIZE = AIM_ACTION_SIZE + 1 + STRAFE_ACTION_SIZE + BLOCKHIT_ACTION_SIZE + HEAL_TRIGGER_ACTION_SIZE + PEARL_TRIGGER_ACTION_SIZE + WTAP_ACTION_SIZE
 STRAFE_OUTPUT_SIZE = 3
 BLOCKHIT_OUTPUT_SIZE = 2
+HL_DECISION_OUTPUT_SIZE = 6
 
 MODEL_CLASSES = {
     "AimSimpleMLP": AimSimpleMLP,
@@ -336,6 +374,33 @@ def load_model(path: str, input_dim: int, output_dim: int, default_model_class_n
         return model
     return loaded
 
+def load_hl_model(path, device=None, return_transforms=False):
+    if device is None:
+        device = device
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    feature_transforms = None
+    feature_defaults = None
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        feature_transforms = checkpoint.get("feature_transforms", None)
+        feature_defaults = checkpoint.get("feature_defaults", None)
+        model = HLMultihead.from_checkpoint(checkpoint)
+    else:
+        model = checkpoint
+    model.checkpoint_meta = checkpoint
+    model.to(device)
+    model.eval()
+
+    if feature_transforms is None and return_transforms:
+        raise ValueError("feature_transforms not available")
+
+    if return_transforms:
+        if feature_defaults is None:
+            raise ValueError("feature_defaults not available")
+        return model, feature_transforms, feature_defaults
+
+    return model
+
 AIM_MODEL_CONFIG = {
     "MODEL_PATH": os.path.join(AIM_DIR, "aim_lstm_9.pth"),
     "INPUT_DIM" : AIM_FEATURE_SIZE,
@@ -364,6 +429,11 @@ PEARL_TRIGGER_MODEL_CONFIG = {
     "MODEL_PATH": os.path.join(PEARL_TRIGGER_DIR, "pearl_trigger_lstm_3.pth"),
     "INPUT_DIM": HL_DECISION_FEATURE_SIZE,
     "OUTPUT_DIM": PEARL_TRIGGER_ACTION_SIZE
+}
+
+HL_MODEL_CONFIG = {
+    "MODEL_PATH": HL_MODEL_PATH,
+    "DEFAULT_FEATURE_TRANSFORMS": FEATURE_TRANSFORMS,
 }
 
 host = "127.0.0.1"
@@ -426,8 +496,42 @@ def get_blockhit_data(data: np.ndarray):
         "crosshairOnTarget", "yawDiffToTarget", "pitchDiffToTarget",
     ])
 
-def get_hl_decision_data(data: np.ndarray):
-    return get_features(data, HL_DECISION_FEATURES)
+def get_hl_decision_data(data: np.ndarray, transforms: dict, defaults: dict):
+    """Match dataset preprocessing: normalize first, then fill checkpoint defaults."""
+    if len(data) < OBS_SIZE:
+        raise ValueError("Observation too short: expected %d floats, got %d" % (OBS_SIZE, len(data)))
+    hl_data = []
+    for name in HL_DECISION_FEATURES:
+        value = data[OBS_INDEX[name]]
+        if name in transforms:
+            value = apply_hl_transform(value, transforms[name])
+        if np.isnan(value):
+            value = defaults.get(name, np.nan)
+        if not np.isfinite(value):
+            raise ValueError(f"Non-finite HL feature after preprocessing: {name}")
+        hl_data.append(value)
+    return np.asarray(hl_data, dtype="<f4")
+
+def apply_hl_transform(raw_data, transform: dict):
+    """
+    Applies HL transforms to scaler data.
+    :param raw_data: Scaler data as float
+    :param transform: transform info of a unique feature field
+    :return: transformed data
+    """
+    expected_keys = ["type", "cap", "divisor"]
+    if any(key not in list(transform.keys()) for key in expected_keys):
+        raise ValueError(f"Invalid HL transform: {transform}")
+
+    type = transform["type"]
+    if type != "log1p":
+        raise NotImplementedError(f"HL transform type {type} is not supported")
+    cap = transform["cap"]
+    divisor = transform["divisor"]
+    # The dataset masks negative raw timers before log1p; defaults are applied later.
+    if np.isnan(raw_data) or raw_data < 0:
+        return np.nan
+    return np.log1p(min(raw_data, cap)) / divisor
 
 def get_features(data: np.ndarray, feature_names):
     if len(data) < OBS_SIZE:
@@ -458,6 +562,17 @@ def logits_to_pearl_probs(logits):
 def probs_to_pearl_trigger(probs, p_threshold=0.6):
     probs = np.asarray(probs, dtype=np.float32).reshape(-1)
     return 1.0 if probs[1] > p_threshold else 0.0
+
+def multi_logits_to_probs(logits):
+    if not torch.is_tensor(logits):
+        logits = torch.as_tensor(logits)
+    probs = torch.softmax(logits, dim=-1)
+    return np.asarray(probs, dtype=float)
+
+def multi_logits_to_class(logits):
+    if not torch.is_tensor(logits):
+        logits = torch.as_tensor(logits)
+    return torch.argmax(logits, dim=-1).long().numpy()
 
 def build_action_packet(seq: int, actions: list):
     actions = np.asarray(actions, dtype="<f4").reshape(-1)
@@ -512,6 +627,11 @@ def infer_seq_len(model, feature_size: int, fallback_input_dim: int):
 
     return fallback_input_dim // feature_size
 
+def infer_hl_seq_len(model):
+    meta = getattr(model, "checkpoint_meta", None)
+    if isinstance(meta, dict) and meta.get("seq_len") is not None:
+        return int(meta["seq_len"])
+    return HL_SEQ_LEN
 
 def run_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -564,25 +684,32 @@ def run_server():
     blockhit_model.eval()
     blockhit_seq_len = infer_seq_len(blockhit_model, BLOCKHIT_FEATURE_SIZE, BLOCKHIT_MODEL_CONFIG["INPUT_DIM"])
 
-    heal_trigger_model = xgb.XGBClassifier()
-    heal_trigger_model.load_model(HEAL_TRIGGER_MODEL_PATH)
-    pearl_trigger_xgb = xgb.XGBClassifier()
-    pearl_trigger_xgb.load_model(PEARL_TRIGGER_MODEL_PATH)
+    # heal_trigger_model = xgb.XGBClassifier()
+    # heal_trigger_model.load_model(HEAL_TRIGGER_MODEL_PATH)
+    # pearl_trigger_xgb = xgb.XGBClassifier()
+    # pearl_trigger_xgb.load_model(PEARL_TRIGGER_MODEL_PATH)
+    #
+    # pearl_trigger_lstm = load_model(
+    #     PEARL_TRIGGER_MODEL_CONFIG["MODEL_PATH"],
+    #     PEARL_TRIGGER_MODEL_CONFIG["INPUT_DIM"],
+    #     PEARL_TRIGGER_MODEL_CONFIG["OUTPUT_DIM"],
+    #     default_model_class_name="PearlTriggerLSTM",
+    #     expected_model_class_name="PearlTriggerLSTM",
+    # )
+    # pearl_trigger_lstm.to(pearl_lstm_device)
+    # pearl_trigger_lstm.eval()
+    #
+    # pearl_seq_len =  infer_seq_len(pearl_trigger_lstm, HL_DECISION_FEATURE_SIZE, PEARL_TRIGGER_MODEL_CONFIG["INPUT_DIM"])
 
-    pearl_trigger_lstm = load_model(
-        PEARL_TRIGGER_MODEL_CONFIG["MODEL_PATH"],
-        PEARL_TRIGGER_MODEL_CONFIG["INPUT_DIM"],
-        PEARL_TRIGGER_MODEL_CONFIG["OUTPUT_DIM"],
-        default_model_class_name="PearlTriggerLSTM",
-        expected_model_class_name="PearlTriggerLSTM",
+    hl_model, feature_transforms, feature_defaults = load_hl_model(
+        HL_MODEL_CONFIG["MODEL_PATH"],
+        device,
+        True
     )
-    pearl_trigger_lstm.to(pearl_lstm_device)
-    pearl_trigger_lstm.eval()
+    hl_seq_len = infer_hl_seq_len(hl_model)
 
-    pearl_seq_len =  infer_seq_len(pearl_trigger_lstm, HL_DECISION_FEATURE_SIZE, PEARL_TRIGGER_MODEL_CONFIG["INPUT_DIM"])
-
-    print("Loaded models: aim_seq_len=%d strafe_seq_len=%d wtap_seq_len=%d blockhit_seq_len=%d pearl_trigger_seq_len=%d"
-          % (aim_seq_len, strafe_seq_len, wtap_seq_len, blockhit_seq_len, pearl_seq_len))
+    print("Loaded models: aim_seq_len=%d strafe_seq_len=%d wtap_seq_len=%d blockhit_seq_len=%d hl_seq_len=%d"
+          % (aim_seq_len, strafe_seq_len, wtap_seq_len, blockhit_seq_len, hl_seq_len))
 
     while True:
         conn, addr = server.accept()
@@ -591,7 +718,8 @@ def run_server():
         strafe_history = deque(maxlen=strafe_seq_len)
         wtap_history = deque(maxlen=wtap_seq_len)
         blockhit_history = deque(maxlen=blockhit_seq_len)
-        pearl_trigger_history = deque(maxlen=pearl_seq_len)
+        # pearl_trigger_history = deque(maxlen=pearl_seq_len)
+        hl_history = deque(maxlen=hl_seq_len)
 
         try:
             while True:
@@ -646,19 +774,19 @@ def run_server():
                     blockhit_y = logits_to_blockhit_action(blockhit_logits, p_threshold=0.3)
 
                 # High-level decision
-                hl_decision_x = get_hl_decision_data(obs)
-                pearl_trigger_history.append(hl_decision_x)
-                while len(pearl_trigger_history) < pearl_seq_len:
-                    pearl_trigger_history.appendleft(hl_decision_x)
+                hl_decision_x = get_hl_decision_data(obs, feature_transforms, feature_defaults)
+                hl_history.append(hl_decision_x)
+                while len(hl_history) < hl_seq_len:
+                    hl_history.appendleft(hl_decision_x)
 
-                # Heal trigger
-                heal_probs = heal_trigger_model.predict_proba(hl_decision_x.reshape(1, -1))[0]
-                heal_y = probs_to_heal_trigger(heal_probs)
-
-                # Pearl trigger
-                pearl_probs = pearl_trigger_xgb.predict_proba(hl_decision_x.reshape(1, -1))[0]
-                pearl_prob = float(pearl_probs[1])
-                pearl_y = probs_to_pearl_trigger(pearl_probs, p_threshold=0.5)
+                # # Heal trigger
+                # heal_probs = heal_trigger_model.predict_proba(hl_decision_x.reshape(1, -1))[0]
+                # heal_y = probs_to_heal_trigger(heal_probs)
+                #
+                # # Pearl trigger
+                # pearl_probs = pearl_trigger_xgb.predict_proba(hl_decision_x.reshape(1, -1))[0]
+                # pearl_prob = float(pearl_probs[1])
+                # pearl_y = probs_to_pearl_trigger(pearl_probs, p_threshold=0.5)
                 # pearl_tensor = torch.tensor(np.array(pearl_trigger_history), dtype=torch.float32).unsqueeze(0).to(pearl_lstm_device)
                 # with torch.no_grad():
                 #     pearl_logits = pearl_trigger_lstm(pearl_tensor).reshape(-1).cpu().numpy()
@@ -666,10 +794,25 @@ def run_server():
                 # pearl_prob = float(pearl_probs[1])
                 # pearl_y = probs_to_heal_trigger(pearl_probs, p_threshold=0.8)
 
-                # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse, healTrigger, pearlTrigger, pearlProb, wtapAxis]
+                hl_tensor = torch.tensor(np.array(hl_history), dtype=torch.float32).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    hl_pred = hl_model(hl_tensor)
+                    hl_state_logits = hl_pred["state_logits"].reshape(-1).cpu().numpy()
+                    hl_heal_logit = hl_pred["heal_logits"].reshape(-1).cpu()
+                    hl_pearl_logit = hl_pred["pearl_logits"].reshape(-1).cpu()
+                    hl_probs = multi_logits_to_probs(hl_state_logits)
+                    hl_heal_prob = torch.sigmoid(hl_heal_logit).numpy()
+                    hl_pearl_prob = torch.sigmoid(hl_pearl_logit).numpy()
+                    hl_y = multi_logits_to_class(hl_state_logits)
+
+                # [deltaYaw, deltaPitch, strafeAxis, strafeConf, blockhitUse, wtapAxis, hlState, hlProbs]
                 action_list = np.concatenate((
                     aim_y,
-                    np.asarray([strafe_y, strafe_confidence, blockhit_y, heal_y, pearl_y, pearl_prob, wtap_y], dtype="<f4"))).tolist()
+                    np.asarray([strafe_y, strafe_confidence, blockhit_y, wtap_y, hl_y], dtype="<f4"),
+                    hl_probs,
+                    hl_heal_prob,
+                    hl_pearl_prob
+                )).tolist()
                 packet = build_action_packet(seq, action_list)
                 conn.sendall(packet)
         except (ConnectionError, ValueError) as e:

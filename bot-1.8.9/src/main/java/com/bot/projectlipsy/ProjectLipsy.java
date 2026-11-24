@@ -1,6 +1,10 @@
 package com.bot.projectlipsy;
 
 import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.util.ChatComponentText;
+import com.bot.projectlipsy.recordWriter.JsonLineBuilder;
+import com.bot.projectlipsy.recordWriter.RuntimeFrameWriter;
+import java.io.IOException;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
@@ -27,6 +31,9 @@ public class ProjectLipsy {
     private Blockhit blockhit;
     private Retreat retreat;
     private float[] actions;
+    private final RuntimeFrameWriter runtimeLog = new RuntimeFrameWriter();
+    private boolean runtimeLogFailed;
+    private String overrideRule;
 
     private enum State {
         ATTACK,
@@ -69,6 +76,8 @@ public class ProjectLipsy {
     public void onClientTick(TickEvent.ClientTickEvent event) throws Exception {
         if (event.phase != TickEvent.Phase.END) return;
         if (mc.thePlayer == null) {
+            runtimeLog.close();
+            runtimeLogFailed = false;
             models.sendObs(null);
             if (blockhit != null) blockhit.cancel("player missing");
             if (healing != null) { healing.stopPotting(); healing.stopUtilityUse(); }
@@ -81,9 +90,19 @@ public class ProjectLipsy {
             blockhit.cancel("target missing");
             healing.stopPotting();
             healing.stopUtilityUse();
+            recordRuntimeFrame(null, null, "target_missing");
             return;
         }
 
+        if (!runtimeLog.isRecording() && !runtimeLogFailed) {
+            try {
+                runtimeLog.start(mc.mcDataDir);
+                mc.thePlayer.addChatMessage(new ChatComponentText(
+                        "[Project Lipsy] Runtime trace started: " + runtimeLog.getFile()));
+            } catch (IOException e) {
+                failRuntimeLog(e);
+            }
+        }
         models.sendObs(target);
         actions = models.getActions();
 
@@ -94,6 +113,7 @@ public class ProjectLipsy {
         }
 
         prevState = state;
+        overrideRule = null;
         stateController(target);
         models.setDecisionState(state.name());
 
@@ -109,6 +129,9 @@ public class ProjectLipsy {
             refill.resetGuiScreen();
         }
 
+        String selectedState = state.name().toLowerCase(java.util.Locale.US);
+        if (selectedState.equals(RuntimeFrameWriter.modelState(actions))) overrideRule = null;
+        String executedState = selectedState;
         switch (state) {
             case ATTACK:
                 movement.update(target, actions);
@@ -125,6 +148,8 @@ public class ProjectLipsy {
                 if (!healing.isPotting() && !healing.canPot()) {
                     state = refill.hotbarPotions() == 0 && refill.hasInventoryPotion()
                             ? State.REFILL : State.ATTACK;
+                    executedState = null;
+                    overrideRule = "heal_unavailable_at_execution";
                     break;
                 }
                 healing.startHealingSequence();
@@ -134,6 +159,8 @@ public class ProjectLipsy {
 
             case SPEED:
                 if (!refill.refillSpeed() || mc.thePlayer.getDistanceToEntity(target) < 2.5D) {
+                    executedState = null;
+                    overrideRule = "speed_item_unavailable_or_target_close";
                     break;
                 }
                 healing.speed();
@@ -141,6 +168,8 @@ public class ProjectLipsy {
 
             case EAT:
                 if (!refill.refillFood() || mc.thePlayer.getDistanceToEntity(target) < 2.5D) {
+                    executedState = null;
+                    overrideRule = "eat_item_unavailable_or_target_close";
                     break;
                 }
                 healing.eat();
@@ -153,6 +182,8 @@ public class ProjectLipsy {
             case REFILL:
                 if (!refill.isRefilling() && (!refill.hasInventoryPotion() || refill.getRefillAmount() <= 0)) {
                     state = State.ATTACK;
+                    executedState = null;
+                    overrideRule = "refill_unavailable_at_execution";
                     break;
                 }
 
@@ -162,7 +193,12 @@ public class ProjectLipsy {
 
                 if (!safe) {
                     refill.stopRefilling();
-                    if (Math.random() < 0.3) retreat.back(target);
+                    executedState = null;
+                    overrideRule = "refill_unsafe";
+                    if (Math.random() < 0.3) {
+                        retreat.back(target);
+                        executedState = "retreat";
+                    }
                     state = State.ATTACK;
                     break;
                 }
@@ -176,16 +212,42 @@ public class ProjectLipsy {
                 break;
 
         }
+        recordRuntimeFrame(selectedState, executedState, overrideRule);
         tickIndex++;
+    }
+
+    private void recordRuntimeFrame(String selectedState, String executedState, String rule) {
+        if (!runtimeLog.isRecording()) return;
+        JsonLineBuilder frame = new JsonLineBuilder(4096).field("tick", models.getObservationTick());
+        models.appendRawFeatures(frame);
+        RuntimeFrameWriter.appendModelOutput(frame, models.getActions());
+        frame.field("selectedState", selectedState);
+        frame.field("executedState", executedState);
+        frame.field("stateAfterTick", state.name().toLowerCase(java.util.Locale.US));
+        frame.field("overrideRule", rule);
+        try {
+            runtimeLog.writeFrame(frame);
+        } catch (IOException e) {
+            failRuntimeLog(e);
+        }
+    }
+
+    private void failRuntimeLog(IOException e) {
+        runtimeLog.close();
+        runtimeLogFailed = true;
+        mc.thePlayer.addChatMessage(new ChatComponentText(
+                "[Project Lipsy] Runtime trace stopped: " + e.getMessage()));
     }
 
     private void stateController(EntityPlayer target) {
         // If we are in the middle of potting, don't change status
         if (healing.isPotting()) {
+            overrideRule = "continue_healing";
             state = State.HEAL;
             return;
         }
         if (pearl.isPearling()) {
+            overrideRule = "continue_pearling";
             state = State.PEARL;
             return;
         }
@@ -194,6 +256,7 @@ public class ProjectLipsy {
 //            return;
 //        }
         if (!refill.hasPotion()) {
+            overrideRule = "no_healing_potions";
             state = State.ATTACK;
             return;
         }
@@ -323,31 +386,50 @@ public class ProjectLipsy {
         // Updated status switcher with HL Multihead support
         boolean actionsAvailable = actions != null && actions.length >= 7;
         if (!actionsAvailable) {
+            overrideRule = "model_unavailable";
             mc.thePlayer.sendChatMessage("[Project L1psy] actions vector unavailable.");
             return;
         }
 
         int HLState = (int) actions[6];
         if (mustHeal && canHeal) {
+            overrideRule = "must_heal";
             state = State.HEAL;
             mc.thePlayer.sendChatMessage("[Project L1psy] Must heal. prob: " + actions[8]);
             return;
         }
 
+        float healProb = actions[13];
+        float pearlProb = actions[14];
+        if (healProb >= 0.5F) {
+            state = State.HEAL;
+            overrideRule = "aux_heal";
+            mc.thePlayer.sendChatMessage("[Project L1psy] Aux: Heal. prob: " + healProb);
+            return;
+        }
+        if (pearlProb >= 0.5F) {
+            state = State.PEARL;
+            overrideRule = "aux_pearl";
+            mc.thePlayer.sendChatMessage("[Project L1psy] Aux: Pearl. prob: " + pearlProb);
+        }
+
         switch (HLState) {
             case 0:
                 if (mustRefill) {
+                    overrideRule = "must_refill";
                     state = State.REFILL;
                     return;
                 }
                 // If far away, prioritize buffs
                 if (dist > 8) {
                     if (canSpeed) {
+                        overrideRule = "distant_speed";
                         state = State.SPEED;
                         mc.thePlayer.sendChatMessage("[Project L1psy] Rule: speed. prob: " + actions[10]);
                         return;
                     }
                     if (canEat) {
+                        overrideRule = "distant_eat";
                         state = State.EAT;
                         mc.thePlayer.sendChatMessage("[Project L1psy] Rule: eat. prob: " + actions[11]);
                         return;
@@ -359,6 +441,7 @@ public class ProjectLipsy {
                 return;
             case 1:
                 if (!canHeal) {
+                    overrideRule = "heal_unavailable";
                     state = State.ATTACK;
                     return;
                 }
@@ -371,6 +454,7 @@ public class ProjectLipsy {
                 return;
             case 3:
                 if (!canSpeed) {
+                    overrideRule = "speed_unavailable";
                     state = State.ATTACK;
                     return;
                 }
@@ -379,6 +463,7 @@ public class ProjectLipsy {
                 return;
             case 4:
                 if (!canEat) {
+                    overrideRule = "eat_unavailable";
                     state = State.ATTACK;
                     return;
                 }
@@ -387,6 +472,7 @@ public class ProjectLipsy {
                 return;
             case 5:
                 if (!needRefill) {
+                    overrideRule = "refill_not_needed";
                     state = State.ATTACK;
                     return;
                 }
@@ -394,6 +480,7 @@ public class ProjectLipsy {
                 mc.thePlayer.sendChatMessage("[Project L1psy] State: Refill. prob: " + actions[12]);
                 return;
             default:
+                overrideRule = "invalid_model_state";
                 state = State.ATTACK;
         }
 

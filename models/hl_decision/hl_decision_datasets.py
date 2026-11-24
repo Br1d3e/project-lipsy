@@ -47,7 +47,7 @@ FEATURES = [
     "hitsTakenLastK",
     "netHitsLastK",
     "ticksSinceCombat",
-    "ticksInCurrentState",
+    # "ticksInCurrentState",
 
     # space
     "blockDistanceFront",
@@ -93,12 +93,12 @@ FEATURES = [
     "canEat",
 
     # current state
-    "s_attack",
-    "s_heal",
-    "s_pearl",
-    "s_speed",
-    "s_eat",
-    "s_refill",
+    # "s_attack",
+    # "s_heal",
+    # "s_pearl",
+    # "s_speed",
+    # "s_eat",
+    # "s_refill",
 
     "ping",
 ]
@@ -157,6 +157,7 @@ FEATURE_DEFAULTS = {
     "blockDistanceLeft": 50,
     "blockDistanceRight": 50,
     "targetEstimatedPotions": 29,
+    "targetSpeedDurationTicks": 0,
 
     "targetRadialVelocity": 0,
     "targetOutwardVelocity": 0,
@@ -196,8 +197,8 @@ FEATURE_TRANSFORMS = {
     }.items()
 }
 
-AUXILIARY_TARGETS = ["target_pot_soon", "target_pot_urgency"]
-DERIVED_COLS = ["target_pot_soon", "target_pot_urgency", "ticksInCurrentState"]
+AUXILIARY_TARGETS = ["target_pot_soon", "target_pot_urgency", "heal_start", "pearl_start"]
+DERIVED_COLS = ["target_pot_soon", "target_pot_urgency", "ticksInCurrentState", "heal_start", "pearl_start"]
 
 class HLDecisionDataset:
     label_name = None
@@ -260,6 +261,7 @@ class HLDecisionDataset:
     def load_derived_cols(self, frames: pd.DataFrame):
         frames = self._col_target_pot_soon(frames)
         frames = self._col_state_duration(frames)
+        frames = self._col_action_starts(frames)
         return frames
 
     def _col_labels_states(self, frames: pd.DataFrame, labels) -> pd.DataFrame:
@@ -358,6 +360,29 @@ class HLDecisionDataset:
 
         return frames
 
+    def _col_action_starts(self, frames: pd.DataFrame):
+        frames = frames.copy()
+
+        heal_start_mask = np.zeros(len(frames), dtype=int)
+        pearl_start_mask = np.zeros(len(frames), dtype=int)
+        for _, round_df in frames.groupby(frames["round_id"], sort=False):
+            round_df = round_df.iloc[np.argsort(round_df["recordingTickIndex"].to_numpy(), kind="stable")]
+            round_idx = frames.index.get_indexer(round_df.index)
+            ticks = round_df["recordingTickIndex"].to_numpy()
+            heal_label = round_df["label"] == "heal"
+            pearl_label = round_df["label"] == "pearl"
+
+            starts_here = ticks == round_df["label_start"].to_numpy()
+            heal_round_mask = starts_here & heal_label.to_numpy()
+            heal_start_mask[round_idx] = heal_round_mask
+
+            pearl_round_mask = starts_here & pearl_label.to_numpy()
+            pearl_start_mask[round_idx] = pearl_round_mask
+
+        frames["heal_start"] = heal_start_mask
+        frames["pearl_start"] = pearl_start_mask
+
+        return frames
 
     def concatenate_frames(self, rounds):
         parts = []
@@ -543,18 +568,23 @@ class HLDecisionDataset:
         X = []
         Y = []
 
-        aux_df = frames[AUXILIARY_TARGETS]
+        aux_values = frames[AUXILIARY_TARGETS].to_numpy(dtype=np.float32) if return_auxiliary_targets else None
         aux_targets = {
             "target_pot_soon": [],
             "target_pot_urgency": [],
+            "heal_start": [],
+            "pearl_start": [],
         }
+        sample_rounds = []
+        target_ticks = []
+        ticks = frames["recordingTickIndex"].to_numpy() if return_auxiliary_targets or "recordingTickIndex" in frames else None
 
         if "round_id" in frames.columns:
             round_groups = frames.groupby(frames["round_id"], sort=False)
         else:
             round_groups = [(None, frames)]
 
-        for _, round_df in round_groups:
+        for round_id, round_df in round_groups:
             round_idx = frames.index.get_indexer(round_df.index)
             if len(round_idx) < seq_len:
                 continue
@@ -572,17 +602,21 @@ class HLDecisionDataset:
                     continue
                 # X is the current state window ending at tick t; Y is the state at tick t+1.
                 target_idx = round_idx[end + 1]
+                # A next row after a recording gap is not the next tick.
+                if ticks is not None and ticks[target_idx] != ticks[round_idx[end]] + 1:
+                    continue
                 x = feature_matrix[frame_idx]
                 y = targets_value[target_idx]
-                aux_idx = round_idx[end]
-                pot_soon = np.float32(aux_df.iloc[aux_idx]["target_pot_soon"])
-                pot_urgency = np.float32(aux_df.iloc[aux_idx]["target_pot_urgency"])
                 if not np.isfinite(x).all() or not np.isfinite(y).all():
                     continue
                 X.append(x)
                 Y.append(y)
-                aux_targets["target_pot_soon"].append(pot_soon)
-                aux_targets["target_pot_urgency"].append(pot_urgency)
+                if return_auxiliary_targets:
+                    for key in aux_targets:
+                        aux_idx = target_idx if key in ("heal_start", "pearl_start") else round_idx[end]
+                        aux_targets[key].append(aux_values[aux_idx, AUXILIARY_TARGETS.index(key)])
+                    sample_rounds.append(0 if round_id is None else round_id)
+                    target_ticks.append(ticks[target_idx])
 
         feature_dim = feature_matrix.shape[1]
         target_dim = 1 if targets_value.ndim == 1 else targets_value.shape[1]
@@ -603,6 +637,10 @@ class HLDecisionDataset:
                 if val.ndim == 1:
                     val = val.reshape(-1, 1)
                 Y_dict[key] = val
+            # round_id is unique across all sessions within this split. These are
+            # evaluation metadata, never input features or training objectives.
+            Y_dict["round_id"] = np.asarray(sample_rounds, dtype=np.int64).reshape(-1, 1)
+            Y_dict["target_tick"] = np.asarray(target_ticks, dtype=np.int64).reshape(-1, 1)
             return X, Y_dict
 
         return X, Y
@@ -1250,6 +1288,8 @@ class HLDecisionDataset:
             print("Y targets:")
             result = {}
             for key, val in Y.items():
+                if key in ("round_id", "target_tick"):
+                    continue
                 print(f"{key}:")
                 result[key] = HLDecisionDataset.target_distribution(val)
             return result
@@ -1269,7 +1309,7 @@ class HLDecisionDataset:
 
 
 if __name__ == "__main__":
-    ds = HLDecisionDataset(label_name=None, label_type=None, use_cache=False, build_cache=True)
+    ds = HLDecisionDataset(label_name=None, label_type=None, use_cache=True, build_cache=False)
 
     train_frames = ds.get_train_frames()
     print(train_frames["ping"])
@@ -1278,6 +1318,17 @@ if __name__ == "__main__":
 
     train_X, train_Y = ds.get_train_X_Y(seq_len=50, return_auxiliary_targets=True)
     print(train_X.shape)
+
+    for name in ("heal_start", "pearl_start"):
+        labels = np.asarray(train_Y[name]).reshape(-1)
+        n_positive = np.count_nonzero(labels == 1)
+        n_negative = np.count_nonzero(labels == 0)
+
+        if n_positive == 0:
+            raise ValueError(f"No positive training examples for {name}")
+
+        r = n_negative / n_positive
+        print(name, "r =", r, "0.1r =", 0.1 * r)
 
     quit()
 

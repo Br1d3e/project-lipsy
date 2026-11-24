@@ -1,6 +1,7 @@
 package com.bot.projectlipsy;
 
 import net.minecraft.client.Minecraft;
+import com.bot.projectlipsy.recordWriter.JsonLineBuilder;
 import com.bot.projectlipsy.features.HLFeatureTracker;
 import com.bot.projectlipsy.features.ServerPingConfig;
 import java.io.File;
@@ -128,6 +129,7 @@ public class ModelConnect {
     private final HLFeatureTracker features;
     private final float[] batch = new float[BATCH_SIZE];
     private float[] actions = null;
+    private boolean observationAvailable = false;
     private ModelClient modelClient;
     private long lastConnectAttemptMs = 0L;
     private boolean printedOfflineMessage = false;
@@ -163,6 +165,7 @@ public class ModelConnect {
 
     public void sendObs(EntityPlayer target) {
         tickIndex++;
+        observationAvailable = false;
         if (target != null && target.isInvisible()) target = null;
         if (features.update(target, tickIndex)) {
             decisionState = "attack";
@@ -177,10 +180,6 @@ public class ModelConnect {
             return;
         }
         utils.updateCombos(target);
-        if (!ensureConnected()) {
-            actions = null;
-            return;
-        }
         double relX = target.posX - mc.thePlayer.posX;
         double relY = target.posY + target.getEyeHeight() - (mc.thePlayer.posY + mc.thePlayer.getEyeHeight());
         double relZ = target.posZ - mc.thePlayer.posZ;
@@ -333,6 +332,11 @@ public class ModelConnect {
         put(targetHoldingHealPotion, features.holdingHeal(target));
         put(ping, pingConfig.pingFor(mc.getCurrentServerData() == null ? null : mc.getCurrentServerData().serverIP));
 
+        observationAvailable = true;
+        if (!ensureConnected()) {
+            actions = null;
+            return;
+        }
         try {
             modelClient.sendPacket(batch);
             actions = modelClient.readPacket();
@@ -341,6 +345,115 @@ public class ModelConnect {
             closeClient();
             System.out.println("[Project Lipsy] Model connection lost: " + e.getMessage());
         }
+    }
+
+    public int getObservationTick() {
+        return tickIndex;
+    }
+
+    // Serialize the exact pre-action socket input, not a second tracker sample.
+    public void appendRawFeatures(JsonLineBuilder frame) {
+        frame.field("observationAvailable", observationAvailable);
+        frame.field("myMotionX", observationAvailable ? batch[myMotionX] : null);
+        frame.field("myMotionY", observationAvailable ? batch[myMotionY] : null);
+        frame.field("myMotionZ", observationAvailable ? batch[myMotionZ] : null);
+        frame.field("myYaw", observationAvailable ? batch[myYaw] : null);
+        frame.field("myPitch", observationAvailable ? batch[myPitch] : null);
+        frame.field("myDeltaYaw", observationAvailable ? batch[myDeltaYaw] : null);
+        frame.field("myDeltaPitch", observationAvailable ? batch[myDeltaPitch] : null);
+        frame.field("myHp", observationAvailable ? batch[myHp] : null);
+        frame.field("myHurtTime", observationAvailable ? batch[myHurtTime] : null);
+        frame.field("myMoveForward", observationAvailable ? batch[myMoveForward] : null);
+        frame.field("myMoveStrafing", observationAvailable ? batch[myMoveStrafing] : null);
+        frame.field("mySwingProgress", observationAvailable ? batch[mySwingProgress] : null);
+        frame.field("myUsingItem", observationAvailable ? batch[myUsingItem] : null);
+        frame.field("myHoldingSword", observationAvailable ? batch[myHoldingSword] : null);
+        frame.field("myBlockingSword", observationAvailable ? batch[myBlockingSword] : null);
+        frame.field("myHasSpeedPotion", observationAvailable ? batch[myHasSpeedPotion] : null);
+        frame.field("mySpeedDurationTicks", observationAvailable ? batch[mySpeedDurationTicks] : null);
+        frame.field("myFoodLevel", observationAvailable ? batch[myFoodLevel] : null);
+        frame.field("myCombo", observationAvailable ? batch[myCombo] : null);
+        frame.field("targetCombo", observationAvailable ? batch[targetCombo] : null);
+        frame.field("pearlCooldownTicksRemaining", observationAvailable ? batch[pearlCooldownTicksRemaining] : null);
+        frame.field("enemyPearlAvailable", observationAvailable ? batch[enemyPearlAvailable] : null);
+        frame.field("enemyPearlCooldownTicksRemaining", observationAvailable ? batch[enemyPearlCooldownTicksRemaining] : null);
+        frame.field("hotbarHealthPotions", observationAvailable ? batch[hotbarHealthPotions] : null);
+        frame.field("inventoryFood", observationAvailable ? batch[inventoryFood] : null);
+        frame.field("inventorySpeedPotions", observationAvailable ? batch[inventorySpeedPotions] : null);
+        frame.field("inventoryHealthPotions", observationAvailable ? batch[inventoryHealthPotions] : null);
+        frame.field("inventoryPearls", observationAvailable ? batch[inventoryPearls] : null);
+        frame.field("crosshairOnTarget", observationAvailable ? batch[crosshairOnTarget] : null);
+        frame.field("ticksSinceLastAttack", observationAvailable ? batch[ticksSinceLastAttack] : null);
+        frame.field("ticksSinceLastBlock", observationAvailable ? batch[ticksSinceLastBlock] : null);
+        frame.field("ticksSinceLastPot", observationAvailable ? batch[ticksSinceLastPot] : null);
+        frame.field("ticksSinceLastEat", observationAvailable ? batch[ticksSinceLastEat] : null);
+        frame.field("ticksSinceLastSpeed", observationAvailable ? batch[ticksSinceLastSpeed] : null);
+        frame.field("ticksSinceLastDamageTaken", observationAvailable ? batch[ticksSinceLastDamageTaken] : null);
+        frame.field("ticksSinceLastHitLanded", observationAvailable ? batch[ticksSinceLastHitLanded] : null);
+        frame.field("ticksSinceLastPearl", observationAvailable ? batch[ticksSinceLastPearl] : null);
+        frame.field("ticksSinceLastEnemyPearl", observationAvailable ? batch[ticksSinceLastEnemyPearl] : null);
+        frame.field("blockDistanceFront", observationAvailable ? batch[blockDistanceFront] : null);
+        frame.field("blockDistanceBack", observationAvailable ? batch[blockDistanceBack] : null);
+        frame.field("blockDistanceLeft", observationAvailable ? batch[blockDistanceLeft] : null);
+        frame.field("blockDistanceRight", observationAvailable ? batch[blockDistanceRight] : null);
+        frame.field("aStrafe", observationAvailable ? batch[aStrafe] : null);
+        frame.field("aAttack", observationAvailable ? batch[aAttack] : null);
+        frame.field("aUseItem", observationAvailable ? batch[aUseItem] : null);
+        frame.field("targetExists", observationAvailable ? batch[targetExists] : 0.0F);
+        frame.field("targetRelX", observationAvailable ? batch[targetRelX] : null);
+        frame.field("targetRelY", observationAvailable ? batch[targetRelY] : null);
+        frame.field("targetRelZ", observationAvailable ? batch[targetRelZ] : null);
+        frame.field("targetDistance", observationAvailable ? batch[targetDistance] : null);
+        frame.field("targetMotionX", observationAvailable ? batch[targetMotionX] : null);
+        frame.field("targetMotionY", observationAvailable ? batch[targetMotionY] : null);
+        frame.field("targetMotionZ", observationAvailable ? batch[targetMotionZ] : null);
+        frame.field("targetYaw", observationAvailable ? batch[targetYaw] : null);
+        frame.field("targetPitch", observationAvailable ? batch[targetPitch] : null);
+        frame.field("targetDeltaYaw", observationAvailable ? batch[targetDeltaYaw] : null);
+        frame.field("targetDeltaPitch", observationAvailable ? batch[targetDeltaPitch] : null);
+        frame.field("targetEstimatedHp", observationAvailable ? batch[targetEstimatedHp] : null);
+        frame.field("targetEstimatedPotions", observationAvailable ? batch[targetEstimatedPotions] : null);
+        frame.field("targetEstimatedPearls", observationAvailable ? batch[targetEstimatedPearls] : null);
+        frame.field("targetHurtTime", observationAvailable ? batch[targetHurtTime] : null);
+        frame.field("targetSwingProgress", observationAvailable ? batch[targetSwingProgress] : null);
+        frame.field("targetUsingItem", observationAvailable ? batch[targetUsingItem] : null);
+        frame.field("targetHasSpeedPotion", observationAvailable ? batch[targetHasSpeedPotion] : null);
+        frame.field("targetSpeedDurationTicks", observationAvailable ? batch[targetSpeedDurationTicks] : null);
+        frame.field("targetFood", observationAvailable ? batch[targetFood] : null);
+        frame.field("targetEating", observationAvailable ? batch[targetEating] : null);
+        frame.field("targetSpeeding", observationAvailable ? batch[targetSpeeding] : null);
+        frame.field("targetPearling", observationAvailable ? batch[targetPearling] : null);
+        frame.field("targetPotting", observationAvailable ? batch[targetPotting] : null);
+        frame.field("yawDiffToTarget", observationAvailable ? batch[yawDiffToTarget] : null);
+        frame.field("pitchDiffToTarget", observationAvailable ? batch[pitchDiffToTarget] : null);
+        frame.field("hpDiff", observationAvailable ? batch[hpDiff] : null);
+        frame.field("canHeal", observationAvailable ? batch[canHeal] : null);
+        frame.field("canPearl", observationAvailable ? batch[canPearl] : null);
+        frame.field("canSpeed", observationAvailable ? batch[canSpeed] : null);
+        frame.field("canEat", observationAvailable ? batch[canEat] : null);
+        frame.field("s_attack", observationAvailable ? batch[s_attack] : null);
+        frame.field("s_heal", observationAvailable ? batch[s_heal] : null);
+        frame.field("s_pearl", observationAvailable ? batch[s_pearl] : null);
+        frame.field("s_speed", observationAvailable ? batch[s_speed] : null);
+        frame.field("s_eat", observationAvailable ? batch[s_eat] : null);
+        frame.field("s_refill", observationAvailable ? batch[s_refill] : null);
+        frame.field("myHitPressure", observationAvailable ? batch[myHitPressure] : null);
+        frame.field("targetHitPressure", observationAvailable ? batch[targetHitPressure] : null);
+        frame.field("hitsLandedLastK", observationAvailable ? batch[hitsLandedLastK] : null);
+        frame.field("hitsTakenLastK", observationAvailable ? batch[hitsTakenLastK] : null);
+        frame.field("netHitsLastK", observationAvailable ? batch[netHitsLastK] : null);
+        frame.field("ticksSinceCombat", observationAvailable ? batch[ticksSinceCombat] : null);
+        frame.field("ticksInCurrentState", observationAvailable ? batch[ticksInCurrentState] : null);
+        frame.field("targetRadialVelocity", observationAvailable ? batch[targetRadialVelocity] : null);
+        frame.field("targetOutwardVelocity", observationAvailable ? batch[targetOutwardVelocity] : null);
+        frame.field("targetFacingMeCos", observationAvailable ? batch[targetFacingMeCos] : null);
+        frame.field("distanceDelta5", observationAvailable ? batch[distanceDelta5] : null);
+        frame.field("distanceDelta20", observationAvailable ? batch[distanceDelta20] : null);
+        frame.field("hitsBeforeTargetHeals", observationAvailable ? batch[hitsBeforeTargetHeals] : null);
+        frame.field("targetHoldingFood", observationAvailable ? batch[targetHoldingFood] : null);
+        frame.field("targetHoldingSpeedPotion", observationAvailable ? batch[targetHoldingSpeedPotion] : null);
+        frame.field("targetHoldingHealPotion", observationAvailable ? batch[targetHoldingHealPotion] : null);
+        frame.field("ping", observationAvailable ? batch[ping] : null);
     }
 
     public float[] getActions() {
